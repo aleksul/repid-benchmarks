@@ -1,8 +1,13 @@
+"""Celery streaming benchmark — workers start first, then messages are published."""
+
+from __future__ import annotations
+
 import mmap
 import os
 import subprocess
 import threading
 import time
+from time import perf_counter
 
 import celery
 from kombu import Exchange as KombuExchange, Queue as KombuQueue
@@ -17,13 +22,12 @@ from _common import (
     report_mmap,
 )
 
-USE_GREEN_THREADS = os.getenv("USE_GREEN_THREADS", "1") != "0"
 GEVENTS = int(os.getenv("CONCURRENCY_LIMIT", "2000"))
 PROCESSES = 8
 PUBLISH_WORKERS = 8
 ENQUEUE_BATCH_SIZE = 1000
 
-QUEUE = "celery_benchmark"
+QUEUE = "celery_streaming_bench"
 COUNTER_PATH = os.getenv("COUNTER_PATH", "")
 
 celery_app = celery.Celery(broker=AMQP_URL.replace("amqp://", "pyamqp://", 1))
@@ -33,15 +37,14 @@ celery_app.conf.worker_enable_remote_control = False
 celery_app.conf.event_queue_exclusive = True
 
 
-@celery_app.task(name="celery-bench", acks_late=True)
-def benchmark_task() -> None:
+@celery_app.task(name="celery-streaming-bench", acks_late=True)
+def streaming_bench() -> None:
     time.sleep(SLEEP_TIME)
     counter_incr_mmap(COUNTER_PATH)
 
 
-def prepare() -> None:
-    purge_queue(QUEUE)
-
+def _publish() -> None:
+    """Publish all messages without purging (queue is already clean)."""
     pub_lock = threading.Lock()
     pub_done = [0]
 
@@ -52,7 +55,7 @@ def prepare() -> None:
     def publish_chunk(n: int) -> None:
         with celery_app.producer_pool.acquire(block=True) as producer:
             for i in range(1, n + 1):
-                benchmark_task.apply_async(producer=producer)
+                streaming_bench.apply_async(producer=producer)
                 if i % ENQUEUE_BATCH_SIZE == 0:
                     with pub_lock:
                         pub_done[0] += ENQUEUE_BATCH_SIZE
@@ -77,49 +80,45 @@ def prepare() -> None:
 
 
 if __name__ == "__main__":
-    print("Enqueueing messages...")
-    prepare()
-    print("Done enqueueing.")
-
-    print("Starting benchmark.")
-    start_time = time.perf_counter()
+    purge_queue(QUEUE)
 
     counter_path = create_counter_file()
 
+    worker_env = {**os.environ, "COUNTER_PATH": counter_path}
+    worker_cwd = os.path.dirname(os.path.abspath(__file__))
+    base_args = ["celery", "-A", "bench_celery_streaming.celery_app", "worker", "--without-mingle", "--without-gossip"]
+
     with open(counter_path, "r+b") as cf, mmap.mmap(cf.fileno(), 8) as mm:
-        base_args = ["celery", "-A", "bench_celery.celery_app", "worker", "--without-mingle", "--without-gossip"]
-        if USE_GREEN_THREADS:
-            worker_env = {**os.environ, "COUNTER_PATH": counter_path}
-            worker_cwd = os.path.dirname(os.path.abspath(__file__))
-            procs = [
-                subprocess.Popen(
-                    base_args
-                    + [
-                        "-P",
-                        "gevent",
-                        "-c",
-                        str(GEVENTS),
-                        "-Q",
-                        QUEUE,
-                        "-n",
-                        f"worker{i}@%h",
-                    ],
-                    env=worker_env,
-                    cwd=worker_cwd,
-                )
-                for i in range(PROCESSES)
-            ]
-        else:
-            procs = [
-                subprocess.Popen(
-                    base_args + ["-c", str(PROCESSES), "-Q", QUEUE],
-                    env={**os.environ, "COUNTER_PATH": counter_path},
-                    cwd=os.path.dirname(os.path.abspath(__file__)),
-                )
-            ]
+        procs = [
+            subprocess.Popen(
+                base_args
+                + [
+                    "-P",
+                    "gevent",
+                    "-c",
+                    str(GEVENTS),
+                    "-Q",
+                    QUEUE,
+                    "-n",
+                    f"worker{i}@%h",
+                ],
+                env=worker_env,
+                cwd=worker_cwd,
+            )
+            for i in range(PROCESSES)
+        ]
+
+        print("Starting workers first...")
+        # Workers are started inside the `with` block; give them time to connect.
+        time.sleep(3.0)
+
+        print("Publishing messages while workers are running...")
+        pub_start = perf_counter()
+        pub_thread = threading.Thread(target=_publish, daemon=True)
+        pub_thread.start()
 
         try:
-            tasks_done, timed_out, first_message_time = report_mmap(start_time, mm)
+            tasks_done, timed_out, _ = report_mmap(pub_start, mm)
         finally:
             for proc in procs:
                 proc.terminate()
@@ -127,7 +126,8 @@ if __name__ == "__main__":
                 proc.wait()
 
     os.unlink(counter_path)
-    duration = time.perf_counter() - first_message_time
+    duration = perf_counter() - pub_start
+    pub_thread.join(timeout=60)
 
     if timed_out:
         purge_queue(QUEUE)

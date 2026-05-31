@@ -1,8 +1,18 @@
+"""Dramatiq latency benchmark — tracks per-message end-to-end latency (p50/p95/p99).
+
+The enqueue timestamp is passed as a task argument.
+Workers record completion latency to a shared mmap file.
+"""
+
+from __future__ import annotations
+
 import mmap
 import os
 import subprocess
+import tempfile
 import threading
 import time
+from time import perf_counter
 
 import dramatiq
 from _common import (
@@ -11,19 +21,22 @@ from _common import (
     SLEEP_TIME,
     counter_incr_mmap,
     create_counter_file,
+    init_latency_file,
+    print_latency_results,
     print_results,
     purge_queue,
+    read_latencies_from_file,
+    record_latency_to_file,
     report_mmap,
 )
 from dramatiq.brokers.rabbitmq import RabbitmqBroker
 
-USE_GREEN_THREADS = os.getenv("USE_GREEN_THREADS", "1") != "0"
 GEVENTS = int(os.getenv("CONCURRENCY_LIMIT", "2000"))
 PROCESSES = 8
 PUBLISH_WORKERS = 16
 ENQUEUE_BATCH_SIZE = 1000
 
-QUEUE = "dramatiq_benchmark"
+QUEUE = "dramatiq_latency_bench"
 COUNTER_PATH = os.getenv("COUNTER_PATH", "")
 
 broker = RabbitmqBroker(url=AMQP_URL)
@@ -31,8 +44,11 @@ dramatiq.set_broker(broker)
 
 
 @dramatiq.actor(queue_name=QUEUE)
-def benchmark_task() -> None:
+def benchmark_task(enqueue_time: float) -> None:
     time.sleep(SLEEP_TIME)
+    lp = os.getenv("LATENCY_PATH", "")
+    if lp:
+        record_latency_to_file(lp, time.time() - enqueue_time)
     counter_incr_mmap(COUNTER_PATH)
 
 
@@ -49,7 +65,7 @@ def prepare() -> None:
     def publish_chunk(n: int) -> None:
         local_broker = RabbitmqBroker(url=AMQP_URL)
         for i in range(1, n + 1):
-            msg = benchmark_task.message()
+            msg = benchmark_task.message(time.time())
             local_broker.enqueue(msg)
             if i % ENQUEUE_BATCH_SIZE == 0:
                 with pub_lock:
@@ -79,28 +95,36 @@ if __name__ == "__main__":
     prepare()
     print("Done enqueueing.")
 
-    print("Starting benchmark.")
-    start_time = time.perf_counter()
-
     counter_path = create_counter_file()
 
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".latency") as tf:
+        latency_path = tf.name
+    init_latency_file(latency_path, MESSAGES_AMOUNT)
+
+    worker_cwd = os.path.dirname(os.path.abspath(__file__))
+    worker_env = {
+        **os.environ,
+        "COUNTER_PATH": counter_path,
+        "LATENCY_PATH": latency_path,
+    }
+
+    print("Starting benchmark.")
+    start_time = perf_counter()
+
     with open(counter_path, "r+b") as cf, mmap.mmap(cf.fileno(), 8) as mm:
-        if USE_GREEN_THREADS:
-            subprocess_args = [
-                "dramatiq-gevent",
-                "bench_dramatiq",
-                "-p",
-                str(PROCESSES),
-                "-t",
-                str(GEVENTS),
-            ]
-        else:
-            subprocess_args = ["dramatiq", "bench_dramatiq", "-p", str(PROCESSES)]
+        subprocess_args = [
+            "dramatiq-gevent",
+            "bench_dramatiq_latency",
+            "-p",
+            str(PROCESSES),
+            "-t",
+            str(GEVENTS),
+        ]
 
         proc = subprocess.Popen(
             subprocess_args,
-            env={**os.environ, "COUNTER_PATH": counter_path},
-            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=worker_env,
+            cwd=worker_cwd,
         )
 
         try:
@@ -109,11 +133,14 @@ if __name__ == "__main__":
             proc.terminate()
             proc.wait()
 
-    duration = time.perf_counter() - first_message_time
+    duration = perf_counter() - first_message_time
 
     if timed_out:
         purge_queue(QUEUE)
 
     print_results(tasks_done, duration)
+    latencies = read_latencies_from_file(latency_path)
+    os.unlink(latency_path)
+    print_latency_results(latencies)
 
     os.unlink(counter_path)

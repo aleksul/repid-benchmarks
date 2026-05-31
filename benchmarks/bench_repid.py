@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import ctypes
-import urllib.error
-import urllib.request
+import os
 from multiprocessing import Process, Value
 from multiprocessing.sharedctypes import Synchronized
 from time import perf_counter
@@ -13,10 +11,8 @@ import uvloop
 from _common import (
     AMQP_URL,
     MESSAGES_AMOUNT,
-    RABBITMQ_MGMT_URL,
-    RABBITMQ_PASS,
-    RABBITMQ_USER,
     SLEEP_TIME,
+    declare_queue,
     print_results,
     purge_queue,
     report_value,
@@ -25,7 +21,7 @@ from repid import AmqpServer, Repid, Router
 
 PROCESSES = 8
 PUBLISH_CONCURRENCY = 10000
-TASKS_LIMIT = 2000
+TASKS_LIMIT = int(os.getenv("CONCURRENCY_LIMIT", "2000"))
 
 CHANNEL = "repid_benchmark"
 
@@ -50,33 +46,12 @@ async def benchmark_task() -> None:
 app.include_router(r)
 
 
-def _declare_queue() -> None:
-    """Declare the benchmark queue via the RabbitMQ Management API."""
-    url = f"{RABBITMQ_MGMT_URL}/api/queues/%2F/{CHANNEL}"
-    credentials = base64.b64encode(f"{RABBITMQ_USER}:{RABBITMQ_PASS}".encode()).decode()
-    request = urllib.request.Request(
-        url,
-        data=b'{"durable":true}',
-        method="PUT",
-        headers={
-            "Authorization": f"Basic {credentials}",
-            "Content-Type": "application/json",
-        },
-    )
-    try:
-        urllib.request.urlopen(request)
-    except urllib.error.HTTPError as e:
-        if e.code not in (200, 201, 204):
-            raise
-
-
 def _purge_queue() -> None:
-    """Purge the benchmark queue via the RabbitMQ Management API (ignores 404)."""
     purge_queue(CHANNEL)
 
 
 async def prepare() -> None:
-    _declare_queue()
+    declare_queue(CHANNEL)
     _purge_queue()
     async with server.connection():
         sem = asyncio.Semaphore(PUBLISH_CONCURRENCY)
@@ -134,14 +109,16 @@ if __name__ == "__main__":
     for process in processes:
         process.start()
 
-    tasks_done, timed_out, first_message_time = report_value(start, counter)
+    try:
+        tasks_done, timed_out, first_message_time = report_value(start, counter)
+    finally:
+        for process in processes:
+            process.terminate()
+        for process in processes:
+            process.join()
 
     end = perf_counter()
     duration = end - first_message_time
-
-    for process in processes:
-        process.terminate()
-        process.join()
 
     if timed_out:
         _purge_queue()

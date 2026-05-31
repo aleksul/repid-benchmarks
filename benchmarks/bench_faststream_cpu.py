@@ -12,6 +12,7 @@ from _common import (
     AMQP_URL,
     MESSAGES_AMOUNT,
     SLEEP_TIME,
+    cpu_work,
     print_results,
     purge_queue,
     report_value,
@@ -28,22 +29,20 @@ QUEUE = "fs_benchmark"
 broker = RabbitBroker(AMQP_URL)
 app = FastStream(broker)
 
-# Shared counter — set to a real Value before workers start.
 _counter: Synchronized = Value(
     ctypes.c_long, 0
-)  # placeholder; replaced in _worker_process
+)
 
 
 @broker.subscriber(RabbitQueue(QUEUE, durable=True), channel=Channel(prefetch_count=MAX_WORKERS))
-async def benchmark_task() -> None:
-    await asyncio.sleep(SLEEP_TIME)
+def benchmark_task() -> None:
+    cpu_work(SLEEP_TIME)
     with _counter.get_lock():
         _counter.value += 1
 
 
 async def prepare() -> None:
     purge_queue(QUEUE)
-    # Use a separate broker instance for publishing to avoid side effects
     async with RabbitBroker(AMQP_URL) as pub_broker:
         await pub_broker.declare_queue(RabbitQueue(QUEUE, durable=True))
         sem = asyncio.Semaphore(PUBLISH_CONCURRENCY)

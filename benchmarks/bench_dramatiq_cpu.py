@@ -11,14 +11,13 @@ from _common import (
     SLEEP_TIME,
     counter_incr_mmap,
     create_counter_file,
+    cpu_work,
     print_results,
     purge_queue,
     report_mmap,
 )
 from dramatiq.brokers.rabbitmq import RabbitmqBroker
 
-USE_GREEN_THREADS = os.getenv("USE_GREEN_THREADS", "1") != "0"
-GEVENTS = int(os.getenv("CONCURRENCY_LIMIT", "2000"))
 PROCESSES = 8
 PUBLISH_WORKERS = 16
 ENQUEUE_BATCH_SIZE = 1000
@@ -32,7 +31,7 @@ dramatiq.set_broker(broker)
 
 @dramatiq.actor(queue_name=QUEUE)
 def benchmark_task() -> None:
-    time.sleep(SLEEP_TIME)
+    cpu_work(SLEEP_TIME)
     counter_incr_mmap(COUNTER_PATH)
 
 
@@ -85,17 +84,7 @@ if __name__ == "__main__":
     counter_path = create_counter_file()
 
     with open(counter_path, "r+b") as cf, mmap.mmap(cf.fileno(), 8) as mm:
-        if USE_GREEN_THREADS:
-            subprocess_args = [
-                "dramatiq-gevent",
-                "bench_dramatiq",
-                "-p",
-                str(PROCESSES),
-                "-t",
-                str(GEVENTS),
-            ]
-        else:
-            subprocess_args = ["dramatiq", "bench_dramatiq", "-p", str(PROCESSES)]
+        subprocess_args = ["dramatiq", "bench_dramatiq_cpu", "-p", str(PROCESSES)]
 
         proc = subprocess.Popen(
             subprocess_args,

@@ -1,8 +1,13 @@
+"""Dramatiq streaming benchmark — workers start first, then messages are published."""
+
+from __future__ import annotations
+
 import mmap
 import os
 import subprocess
 import threading
 import time
+from time import perf_counter
 
 import dramatiq
 from _common import (
@@ -17,13 +22,12 @@ from _common import (
 )
 from dramatiq.brokers.rabbitmq import RabbitmqBroker
 
-USE_GREEN_THREADS = os.getenv("USE_GREEN_THREADS", "1") != "0"
 GEVENTS = int(os.getenv("CONCURRENCY_LIMIT", "2000"))
 PROCESSES = 8
 PUBLISH_WORKERS = 16
 ENQUEUE_BATCH_SIZE = 1000
 
-QUEUE = "dramatiq_benchmark"
+QUEUE = "dramatiq_streaming_bench"
 COUNTER_PATH = os.getenv("COUNTER_PATH", "")
 
 broker = RabbitmqBroker(url=AMQP_URL)
@@ -36,9 +40,8 @@ def benchmark_task() -> None:
     counter_incr_mmap(COUNTER_PATH)
 
 
-def prepare() -> None:
-    purge_queue(QUEUE)
-
+def _publish() -> None:
+    """Publish all messages without purging (queue is already clean)."""
     pub_lock = threading.Lock()
     pub_done = [0]
 
@@ -75,41 +78,45 @@ def prepare() -> None:
 
 
 if __name__ == "__main__":
-    print("Enqueueing messages...")
-    prepare()
-    print("Done enqueueing.")
-
-    print("Starting benchmark.")
-    start_time = time.perf_counter()
+    purge_queue(QUEUE)
 
     counter_path = create_counter_file()
 
+    worker_cwd = os.path.dirname(os.path.abspath(__file__))
+    worker_env = {**os.environ, "COUNTER_PATH": counter_path}
+
     with open(counter_path, "r+b") as cf, mmap.mmap(cf.fileno(), 8) as mm:
-        if USE_GREEN_THREADS:
-            subprocess_args = [
-                "dramatiq-gevent",
-                "bench_dramatiq",
-                "-p",
-                str(PROCESSES),
-                "-t",
-                str(GEVENTS),
-            ]
-        else:
-            subprocess_args = ["dramatiq", "bench_dramatiq", "-p", str(PROCESSES)]
+        subprocess_args = [
+            "dramatiq-gevent",
+            "bench_dramatiq_streaming",
+            "-p",
+            str(PROCESSES),
+            "-t",
+            str(GEVENTS),
+        ]
 
         proc = subprocess.Popen(
             subprocess_args,
-            env={**os.environ, "COUNTER_PATH": counter_path},
-            cwd=os.path.dirname(os.path.abspath(__file__)),
+            env=worker_env,
+            cwd=worker_cwd,
         )
 
+        print("Starting workers first...")
+        time.sleep(3.0)
+
+        print("Publishing messages while workers are running...")
+        pub_start = perf_counter()
+        pub_thread = threading.Thread(target=_publish, daemon=True)
+        pub_thread.start()
+
         try:
-            tasks_done, timed_out, first_message_time = report_mmap(start_time, mm)
+            tasks_done, timed_out, _ = report_mmap(pub_start, mm)
         finally:
             proc.terminate()
             proc.wait()
 
-    duration = time.perf_counter() - first_message_time
+    duration = perf_counter() - pub_start
+    pub_thread.join(timeout=60)
 
     if timed_out:
         purge_queue(QUEUE)

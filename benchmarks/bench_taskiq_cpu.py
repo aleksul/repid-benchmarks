@@ -13,6 +13,7 @@ from _common import (
     SLEEP_TIME,
     counter_incr_mmap,
     create_counter_file,
+    cpu_work,
     print_results,
     purge_queue,
     report_mmap,
@@ -34,8 +35,8 @@ broker = AioPikaBroker(
 
 
 @broker.task(task_name="benchmark_task")
-async def benchmark_task() -> None:
-    await asyncio.sleep(SLEEP_TIME)
+def benchmark_task() -> None:
+    cpu_work(SLEEP_TIME)
     counter_incr_mmap(COUNTER_PATH)
 
 
@@ -83,7 +84,7 @@ if __name__ == "__main__":
                     [
                         "taskiq",
                         "worker",
-                        "bench_taskiq:broker",
+                        "bench_taskiq_cpu:broker",
                         "--workers",
                         "1",
                         "--log-level",

@@ -4,35 +4,37 @@ import subprocess
 import threading
 import time
 
-import dramatiq
+import celery
+from kombu import Exchange as KombuExchange, Queue as KombuQueue
 from _common import (
     AMQP_URL,
     MESSAGES_AMOUNT,
     SLEEP_TIME,
     counter_incr_mmap,
     create_counter_file,
+    cpu_work,
     print_results,
     purge_queue,
     report_mmap,
 )
-from dramatiq.brokers.rabbitmq import RabbitmqBroker
 
-USE_GREEN_THREADS = os.getenv("USE_GREEN_THREADS", "1") != "0"
-GEVENTS = int(os.getenv("CONCURRENCY_LIMIT", "2000"))
 PROCESSES = 8
-PUBLISH_WORKERS = 16
+PUBLISH_WORKERS = 8
 ENQUEUE_BATCH_SIZE = 1000
 
-QUEUE = "dramatiq_benchmark"
+QUEUE = "celery_benchmark"
 COUNTER_PATH = os.getenv("COUNTER_PATH", "")
 
-broker = RabbitmqBroker(url=AMQP_URL)
-dramatiq.set_broker(broker)
+celery_app = celery.Celery(broker=AMQP_URL.replace("amqp://", "pyamqp://", 1))
+celery_app.conf.task_default_queue = QUEUE
+celery_app.conf.task_queues = (KombuQueue(QUEUE, exchange=KombuExchange("celery", type="direct"), routing_key=QUEUE, durable=True),)
+celery_app.conf.worker_enable_remote_control = False
+celery_app.conf.event_queue_exclusive = True
 
 
-@dramatiq.actor(queue_name=QUEUE)
+@celery_app.task(name="celery-bench", acks_late=True)
 def benchmark_task() -> None:
-    time.sleep(SLEEP_TIME)
+    cpu_work(SLEEP_TIME)
     counter_incr_mmap(COUNTER_PATH)
 
 
@@ -47,13 +49,12 @@ def prepare() -> None:
     counts = [per_worker + (1 if i < remainder else 0) for i in range(PUBLISH_WORKERS)]
 
     def publish_chunk(n: int) -> None:
-        local_broker = RabbitmqBroker(url=AMQP_URL)
-        for i in range(1, n + 1):
-            msg = benchmark_task.message()
-            local_broker.enqueue(msg)
-            if i % ENQUEUE_BATCH_SIZE == 0:
-                with pub_lock:
-                    pub_done[0] += ENQUEUE_BATCH_SIZE
+        with celery_app.producer_pool.acquire(block=True) as producer:
+            for i in range(1, n + 1):
+                benchmark_task.apply_async(producer=producer)
+                if i % ENQUEUE_BATCH_SIZE == 0:
+                    with pub_lock:
+                        pub_done[0] += ENQUEUE_BATCH_SIZE
         leftover = n % ENQUEUE_BATCH_SIZE
         if leftover:
             with pub_lock:
@@ -85,35 +86,27 @@ if __name__ == "__main__":
     counter_path = create_counter_file()
 
     with open(counter_path, "r+b") as cf, mmap.mmap(cf.fileno(), 8) as mm:
-        if USE_GREEN_THREADS:
-            subprocess_args = [
-                "dramatiq-gevent",
-                "bench_dramatiq",
-                "-p",
-                str(PROCESSES),
-                "-t",
-                str(GEVENTS),
-            ]
-        else:
-            subprocess_args = ["dramatiq", "bench_dramatiq", "-p", str(PROCESSES)]
-
-        proc = subprocess.Popen(
-            subprocess_args,
-            env={**os.environ, "COUNTER_PATH": counter_path},
-            cwd=os.path.dirname(os.path.abspath(__file__)),
-        )
+        base_args = ["celery", "-A", "bench_celery_cpu.celery_app", "worker", "--without-mingle", "--without-gossip"]
+        procs = [
+            subprocess.Popen(
+                base_args + ["-c", str(PROCESSES), "-Q", QUEUE],
+                env={**os.environ, "COUNTER_PATH": counter_path},
+                cwd=os.path.dirname(os.path.abspath(__file__)),
+            )
+        ]
 
         try:
             tasks_done, timed_out, first_message_time = report_mmap(start_time, mm)
         finally:
-            proc.terminate()
-            proc.wait()
+            for proc in procs:
+                proc.terminate()
+            for proc in procs:
+                proc.wait()
 
+    os.unlink(counter_path)
     duration = time.perf_counter() - first_message_time
 
     if timed_out:
         purge_queue(QUEUE)
 
     print_results(tasks_done, duration)
-
-    os.unlink(counter_path)

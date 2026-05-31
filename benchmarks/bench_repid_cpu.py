@@ -12,45 +12,57 @@ from _common import (
     AMQP_URL,
     MESSAGES_AMOUNT,
     SLEEP_TIME,
+    cpu_work,
+    declare_queue,
     print_results,
     purge_queue,
     report_value,
 )
-from faststream import FastStream
-from faststream.rabbit import Channel, RabbitBroker, RabbitQueue
+from repid import AmqpServer, Repid, Router
 
 PROCESSES = 8
 PUBLISH_CONCURRENCY = 10000
-MAX_WORKERS = int(os.getenv("CONCURRENCY_LIMIT", "2000"))
+TASKS_LIMIT = int(os.getenv("CONCURRENCY_LIMIT", "2000"))
 
-QUEUE = "fs_benchmark"
+CHANNEL = "repid_benchmark"
 
-broker = RabbitBroker(AMQP_URL)
-app = FastStream(broker)
+server = AmqpServer(dsn=AMQP_URL)
 
-# Shared counter — set to a real Value before workers start.
-_counter: Synchronized = Value(
-    ctypes.c_long, 0
-)  # placeholder; replaced in _worker_process
+app = Repid()
+app.servers.register_server("default", server, is_default=True)
+
+r = Router(channel=CHANNEL)
+
+_counter: Synchronized = Value(ctypes.c_long, 0)
 
 
-@broker.subscriber(RabbitQueue(QUEUE, durable=True), channel=Channel(prefetch_count=MAX_WORKERS))
-async def benchmark_task() -> None:
-    await asyncio.sleep(SLEEP_TIME)
+@r.actor(run_in_process=False)
+def benchmark_task() -> None:
+    cpu_work(SLEEP_TIME)
     with _counter.get_lock():
         _counter.value += 1
 
 
+app.include_router(r)
+
+
+def _purge_queue() -> None:
+    purge_queue(CHANNEL)
+
+
 async def prepare() -> None:
-    purge_queue(QUEUE)
-    # Use a separate broker instance for publishing to avoid side effects
-    async with RabbitBroker(AMQP_URL) as pub_broker:
-        await pub_broker.declare_queue(RabbitQueue(QUEUE, durable=True))
+    declare_queue(CHANNEL)
+    _purge_queue()
+    async with server.connection():
         sem = asyncio.Semaphore(PUBLISH_CONCURRENCY)
         pending: set[asyncio.Task] = set()
 
         async def _send() -> None:
-            await pub_broker.publish(b"", queue=QUEUE)
+            await app.send_message(
+                channel=CHANNEL,
+                payload=b"",
+                headers={"topic": "benchmark_task"},
+            )
             sem.release()
 
         for i in range(MESSAGES_AMOUNT):
@@ -69,7 +81,8 @@ async def prepare() -> None:
 async def run(counter: Synchronized) -> None:
     global _counter
     _counter = counter
-    await app.run()
+    async with server.connection():
+        await app.run_worker(graceful_shutdown_time=0, tasks_limit=TASKS_LIMIT)
 
 
 def _worker_process(counter: Synchronized) -> None:
@@ -82,7 +95,7 @@ if __name__ == "__main__":
 
     print("Enqueueing messages...")
     loop.run_until_complete(prepare())
-    print("\nDone enqueueing.")
+    print("Done enqueueing.")
 
     counter: Synchronized = Value(ctypes.c_long, 0)
 
@@ -108,6 +121,6 @@ if __name__ == "__main__":
     duration = end - first_message_time
 
     if timed_out:
-        purge_queue(QUEUE)
+        _purge_queue()
 
     print_results(tasks_done, duration)

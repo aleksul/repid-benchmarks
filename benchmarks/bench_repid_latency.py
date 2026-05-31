@@ -1,8 +1,18 @@
+"""Repid latency benchmark — tracks per-message end-to-end latency (p50/p95/p99).
+
+Each message carries its enqueue timestamp as a JSON payload argument.
+Workers record completion latency to a shared mmap file.
+Outputs THROUGHPUT and LATENCY_P* lines for run_all.py.
+"""
+
 from __future__ import annotations
 
 import asyncio
 import ctypes
+import json
 import os
+import tempfile
+import time
 from multiprocessing import Process, Value
 from multiprocessing.sharedctypes import Synchronized
 from time import perf_counter
@@ -12,45 +22,59 @@ from _common import (
     AMQP_URL,
     MESSAGES_AMOUNT,
     SLEEP_TIME,
+    declare_queue,
+    init_latency_file,
+    print_latency_results,
     print_results,
     purge_queue,
+    read_latencies_from_file,
+    record_latency_to_file,
     report_value,
 )
-from faststream import FastStream
-from faststream.rabbit import Channel, RabbitBroker, RabbitQueue
+from repid import AmqpServer, Repid, Router
 
 PROCESSES = 8
 PUBLISH_CONCURRENCY = 10000
-MAX_WORKERS = int(os.getenv("CONCURRENCY_LIMIT", "2000"))
+TASKS_LIMIT = int(os.getenv("CONCURRENCY_LIMIT", "2000"))
 
-QUEUE = "fs_benchmark"
+CHANNEL = "repid_latency_bench"
 
-broker = RabbitBroker(AMQP_URL)
-app = FastStream(broker)
+server = AmqpServer(dsn=AMQP_URL)
+app = Repid()
+app.servers.register_server("default", server, is_default=True)
+r = Router(channel=CHANNEL)
 
-# Shared counter — set to a real Value before workers start.
-_counter: Synchronized = Value(
-    ctypes.c_long, 0
-)  # placeholder; replaced in _worker_process
+_counter: Synchronized = Value(ctypes.c_long, 0)
 
 
-@broker.subscriber(RabbitQueue(QUEUE, durable=True), channel=Channel(prefetch_count=MAX_WORKERS))
-async def benchmark_task() -> None:
+@r.actor
+async def benchmark_task(enqueue_time: float) -> None:
     await asyncio.sleep(SLEEP_TIME)
+    latency = time.time() - enqueue_time
+    latency_path = os.getenv("LATENCY_PATH", "")
+    if latency_path:
+        record_latency_to_file(latency_path, latency)
     with _counter.get_lock():
         _counter.value += 1
 
 
+app.include_router(r)
+
+
 async def prepare() -> None:
-    purge_queue(QUEUE)
-    # Use a separate broker instance for publishing to avoid side effects
-    async with RabbitBroker(AMQP_URL) as pub_broker:
-        await pub_broker.declare_queue(RabbitQueue(QUEUE, durable=True))
+    declare_queue(CHANNEL)
+    purge_queue(CHANNEL)
+    async with server.connection():
         sem = asyncio.Semaphore(PUBLISH_CONCURRENCY)
         pending: set[asyncio.Task] = set()
 
         async def _send() -> None:
-            await pub_broker.publish(b"", queue=QUEUE)
+            payload = json.dumps({"enqueue_time": time.time()}).encode()
+            await app.send_message(
+                channel=CHANNEL,
+                payload=payload,
+                headers={"topic": "benchmark_task"},
+            )
             sem.release()
 
         for i in range(MESSAGES_AMOUNT):
@@ -69,7 +93,8 @@ async def prepare() -> None:
 async def run(counter: Synchronized) -> None:
     global _counter
     _counter = counter
-    await app.run()
+    async with server.connection():
+        await app.run_worker(graceful_shutdown_time=0, tasks_limit=TASKS_LIMIT)
 
 
 def _worker_process(counter: Synchronized) -> None:
@@ -80,12 +105,16 @@ if __name__ == "__main__":
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
 
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".latency") as tf:
+        latency_path = tf.name
+    init_latency_file(latency_path, MESSAGES_AMOUNT)
+    os.environ["LATENCY_PATH"] = latency_path
+
     print("Enqueueing messages...")
     loop.run_until_complete(prepare())
     print("\nDone enqueueing.")
 
     counter: Synchronized = Value(ctypes.c_long, 0)
-
     processes: list[Process] = [
         Process(target=_worker_process, args=(counter,)) for _ in range(PROCESSES)
     ]
@@ -108,6 +137,10 @@ if __name__ == "__main__":
     duration = end - first_message_time
 
     if timed_out:
-        purge_queue(QUEUE)
+        purge_queue(CHANNEL)
 
     print_results(tasks_done, duration)
+    latencies = read_latencies_from_file(latency_path)
+    print_latency_results(latencies)
+
+    os.unlink(latency_path)
