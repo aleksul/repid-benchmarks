@@ -60,13 +60,23 @@ python run_all.py --help
 
 ## Plotting results
 
-After running benchmarks, generate a chart from `benchmarks_results.csv`:
+After running benchmarks, generate category-aware charts from
+`benchmarks_results.csv` and `latency_results.csv`:
 
 ```bash
-python plot_benchmarks.py
+uv run python plot_benchmarks.py
 ```
 
-The chart is saved as `benchmarks_chart.svg`.
+Charts are saved to `benchmark_charts/`:
+
+| Chart | Description |
+|---|---|
+| `throughput_hc.svg` | High-concurrency throughput |
+| `throughput_cpu.svg` | CPU-bound throughput |
+| `throughput_streaming.svg` | Streaming publish/consume throughput |
+| `throughput_burst.svg` | Bursty-load throughput |
+| `latency_tradeoff.svg` | Throughput plus p50, p95, and p99 latency from latency-instrumented runs |
+| `latency_tradeoff_scatter.svg` | p95 latency vs throughput tradeoff; upper-left is best |
 
 ## Running a single benchmark
 
