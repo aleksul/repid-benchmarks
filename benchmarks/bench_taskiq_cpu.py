@@ -14,6 +14,7 @@ from _common import (
     counter_incr_mmap,
     create_counter_file,
     cpu_work,
+    get_cpu_work_iterations,
     print_results,
     purge_queue,
     report_mmap,
@@ -69,6 +70,9 @@ async def prepare() -> None:
 if __name__ == "__main__":
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    iterations = get_cpu_work_iterations()
+    print(f"CPU work iterations per task: {iterations}")
 
     print("Enqueueing messages...")
     loop.run_until_complete(prepare())

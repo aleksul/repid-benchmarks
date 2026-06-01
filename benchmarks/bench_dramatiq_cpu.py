@@ -12,6 +12,7 @@ from _common import (
     counter_incr_mmap,
     create_counter_file,
     cpu_work,
+    get_cpu_work_iterations,
     print_results,
     purge_queue,
     report_mmap,
@@ -74,6 +75,9 @@ def prepare() -> None:
 
 
 if __name__ == "__main__":
+    iterations = get_cpu_work_iterations()
+    print(f"CPU work iterations per task: {iterations}")
+
     print("Enqueueing messages...")
     prepare()
     print("Done enqueueing.")

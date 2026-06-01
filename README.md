@@ -50,6 +50,9 @@ python run_all.py --help
                       # override message count for all frameworks/sleep-times
 --messages-per-framework  FW:N [FW:N ...]
                       # override message count for a specific framework, e.g. celery_nogt:5000
+--cpu-work-iterations N
+                      # fixed hash iterations per CPU task; if omitted, run_all calibrates one
+                      # shared value per CPU sleep time and passes it to all CPU frameworks
 --amqp-url            amqp://user:testtest@localhost:5672
                       # AMQP broker URL passed to every benchmark
 --rabbitmq-mgmt-url   http://localhost:15672
@@ -90,6 +93,8 @@ environment variables are supported:
 | `TIME_LIMIT` | `300` | Max seconds to wait for processing |
 | `AMQP_URL` | `amqp://user:testtest@localhost:5672` | AMQP broker URL |
 | `RABBITMQ_MGMT_URL` | derived from `AMQP_URL` | RabbitMQ management HTTP URL |
+| `CPU_WORK_ITERATIONS` | unset | Fixed hash iterations per CPU task; required when running CPU benchmark files directly |
+| `CPU_WORK_CALIBRATION_SECONDS` | `0.25` | Seconds `run_all.py` uses to calibrate CPU iterations when `CPU_WORK_ITERATIONS` is unset |
 
 ```bash
 SLEEP_TIME=0.1 MESSAGES_AMOUNT=1000 python benchmarks/bench_repid.py

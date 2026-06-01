@@ -24,6 +24,8 @@ import threading
 from pathlib import Path
 from statistics import mean, stdev
 
+from benchmarks._common import calibrate_cpu_work_iterations
+
 DIR = Path(__file__).parent
 BENCHMARKS_DIR = Path(__file__).parent / "benchmarks"
 
@@ -126,9 +128,9 @@ DEFAULT_MESSAGES_PER_FRAMEWORK_SLEEP: dict[str, dict[float, int]] = {
     "taskiq_hc": {0.01: 10_000, 0.1: 15_000, 0.5: 5_000, 1.0: 2_000},
     # CPU-bound variants — fewer sleep times (long CPU tasks are impractical)
     "repid_cpu": {0.01: 6_000, 0.1: 2_000},
-    "celery_cpu": {0.01: 4_000, 0.1: 2_000},
-    "dramatiq_cpu": {0.01: 3_000, 0.1: 2_000},
-    "faststream_cpu": {0.01: 7_000, 0.1: 2_000},
+    "celery_cpu": {0.01: 6_000, 0.1: 2_000},
+    "dramatiq_cpu": {0.01: 6_000, 0.1: 2_000},
+    "faststream_cpu": {0.01: 6_000, 0.1: 2_000},
     "taskiq_cpu": {0.01: 6_000, 0.1: 2_000},
     # Streaming variants — same message counts as base
     "repid_streaming": {0.01: 200_000, 0.1: 200_000, 0.5: 200_000, 1.0: 200_000, 5.0: 100_000},
@@ -461,6 +463,13 @@ def main() -> None:
         help="Override message count for a specific framework across all its sleep times, e.g. celery_nogt:5000. Takes precedence over --messages and per-(fw,sleep) defaults.",
     )
     parser.add_argument(
+        "--cpu-work-iterations",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Fixed hash iterations per CPU task. When omitted, run_all calibrates one shared value per CPU sleep time.",
+    )
+    parser.add_argument(
         "--amqp-url",
         default="amqp://user:testtest@localhost:5672",
         metavar="URL",
@@ -545,6 +554,28 @@ def main() -> None:
 
     # Build per-framework sleep time lists.
     fw_sleep_times = {fw: get_sleep_times_for_fw(fw) for fw in frameworks}
+
+    cpu_work_iterations = args.cpu_work_iterations
+    if cpu_work_iterations is None and "CPU_WORK_ITERATIONS" in os.environ:
+        cpu_work_iterations = int(os.environ["CPU_WORK_ITERATIONS"])
+    if cpu_work_iterations is not None and cpu_work_iterations < 0:
+        raise ValueError("--cpu-work-iterations must be non-negative")
+
+    cpu_iterations_by_sleep: dict[float, int] = {}
+    for fw in frameworks:
+        if not _is_cpu_fw(fw):
+            continue
+        for st in fw_sleep_times[fw]:
+            iterations = (
+                cpu_work_iterations
+                if cpu_work_iterations is not None
+                else calibrate_cpu_work_iterations(st)
+            )
+            cpu_iterations_by_sleep.setdefault(st, iterations)
+
+    for st, iterations in sorted(cpu_iterations_by_sleep.items()):
+        print(f"[CPU] sleep={st:<5} fixed work={iterations} hash iterations/task")
+
     # Total number of runs.
     total = sum(len(sts) * runs for fw, sts in fw_sleep_times.items())
 
@@ -630,7 +661,14 @@ def main() -> None:
                     label = f"[{done}/{total}] {framework:<10}  sleep={sleep_time:<5}  run={run_idx}/{runs}"
                     print(label, "...", flush=True)
 
-                    result = run_once(framework, sleep_time, messages, extra_env)
+                    run_env = extra_env
+                    if _is_cpu_fw(framework):
+                        run_env = {
+                            **extra_env,
+                            "CPU_WORK_ITERATIONS": str(cpu_iterations_by_sleep[sleep_time]),
+                        }
+
+                    result = run_once(framework, sleep_time, messages, run_env)
                     if result is not None:
                         throughput = result["throughput"]
                         throughput_results[framework][sleep_time].append(throughput)

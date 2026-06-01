@@ -14,6 +14,7 @@ from _common import (
     SLEEP_TIME,
     cpu_work,
     declare_queue,
+    get_cpu_work_iterations,
     print_results,
     purge_queue,
     report_value,
@@ -92,6 +93,9 @@ def _worker_process(counter: Synchronized) -> None:
 if __name__ == "__main__":
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
+
+    iterations = get_cpu_work_iterations()
+    print(f"CPU work iterations per task: {iterations}")
 
     print("Enqueueing messages...")
     loop.run_until_complete(prepare())

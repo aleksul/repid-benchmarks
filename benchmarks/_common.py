@@ -19,6 +19,7 @@ SLEEP_TIME = float(os.getenv("SLEEP_TIME", "1.0"))
 TIME_LIMIT = float(os.getenv("TIME_LIMIT", "300"))
 
 TASK_TYPE = os.getenv("TASK_TYPE", "io")  # "io" (sleep) or "cpu" (compute)
+CPU_WORK_CALIBRATION_SECONDS = float(os.getenv("CPU_WORK_CALIBRATION_SECONDS", "0.25"))
 
 BURST_SIZE = int(os.getenv("BURST_SIZE", "5000"))
 BURST_INTERVAL = float(os.getenv("BURST_INTERVAL", "1.0"))
@@ -172,12 +173,66 @@ def declare_queue(queue_name: str) -> None:
             raise
 
 
-def cpu_work(duration_sec: float) -> None:
-    """Perform CPU-bound work for approximately *duration_sec* seconds."""
-    deadline = time.perf_counter() + duration_sec
-    data = b"benchmark_cpu_payload_data" * 40  # ~1 KB
+_CPU_WORK_DATA = b"benchmark_cpu_payload_data" * 40  # ~1 KB
+
+
+def _validate_cpu_work_iterations(value: str) -> int:
+    iterations = int(value)
+    if iterations < 0:
+        raise ValueError("CPU_WORK_ITERATIONS must be non-negative")
+    return iterations
+
+
+def get_cpu_work_iterations() -> int:
+    """Return the fixed hash-iteration count configured for CPU tasks."""
+    configured = os.getenv("CPU_WORK_ITERATIONS")
+    if configured is None:
+        raise RuntimeError(
+            "CPU_WORK_ITERATIONS must be set for CPU benchmarks. "
+            "Use run_all.py or provide CPU_WORK_ITERATIONS explicitly."
+        )
+    return _validate_cpu_work_iterations(configured)
+
+
+def calibrate_cpu_work_iterations(duration_sec: float) -> int:
+    """Return a fixed hash-iteration count for a target CPU duration.
+
+    CPU tasks must not use a wall-clock deadline inside the task body: a
+    descheduled or oversubscribed worker would do less actual work. Calibration
+    is only used by the orchestrator to choose a shared value that is passed to
+    every framework via CPU_WORK_ITERATIONS.
+    """
+    if duration_sec <= 0:
+        return 0
+
+    sample_seconds = max(CPU_WORK_CALIBRATION_SECONDS, 0.001)
+    digest = hashlib.sha256
+    data = _CPU_WORK_DATA
+    iterations = 0
+    start = time.perf_counter()
+    deadline = start + sample_seconds
     while time.perf_counter() < deadline:
-        hashlib.sha256(data).digest()
+        digest(data).digest()
+        iterations += 1
+
+    elapsed = max(time.perf_counter() - start, 0.001)
+    return max(1, round(iterations * duration_sec / elapsed))
+
+
+def set_cpu_work_iterations(iterations: int) -> int:
+    """Export a fixed CPU work iteration count for child worker processes."""
+    os.environ["CPU_WORK_ITERATIONS"] = str(iterations)
+    return iterations
+
+
+def cpu_work(duration_sec: float) -> None:
+    """Perform a fixed amount of CPU-bound hash work."""
+    del duration_sec
+    iterations = get_cpu_work_iterations()
+    digest = hashlib.sha256
+    data = _CPU_WORK_DATA
+    for _ in range(iterations):
+        digest(data).digest()
 
 
 # ---------------------------------------------------------------------------
