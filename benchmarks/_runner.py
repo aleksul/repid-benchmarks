@@ -205,6 +205,12 @@ def _consumer_target(cfg: BenchmarkConfig) -> int:
     return cfg.processes
 
 
+def _needs_counter_file(cfg: BenchmarkConfig) -> bool:
+    return cfg.framework in {"celery", "dramatiq", "taskiq"} or (
+        cfg.framework == "repid" and cfg.task_kind == "cpu"
+    )
+
+
 def _start_workers(adapter: object, cfg: BenchmarkConfig, config_path: Path, counter: object | None) -> list[object]:
     return adapter.start_workers(cfg, config_path, counter)  # type: ignore[attr-defined]
 
@@ -212,7 +218,10 @@ def _start_workers(adapter: object, cfg: BenchmarkConfig, config_path: Path, cou
 def _stop_workers(adapter: object, workers: list[object]) -> None:
     if not workers:
         return
-    if getattr(adapter, "COUNTER_KIND") == "value":
+    if (
+        getattr(adapter, "WORKER_KIND", None) == "multiprocessing"
+        or getattr(adapter, "COUNTER_KIND") == "value"
+    ):
         terminate_multiprocessing(workers)  # type: ignore[arg-type]
     else:
         terminate_processes(workers)  # type: ignore[arg-type]
@@ -285,7 +294,7 @@ def run(config_path: Path) -> None:
         _delete_run_queues(cfg)
 
     cleanup_paths: list[str] = []
-    if cfg.framework in {"celery", "dramatiq", "taskiq"}:
+    if _needs_counter_file(cfg):
         cfg.counter_path = create_counter_file()
         cleanup_paths.append(cfg.counter_path)
     if cfg.is_latency:

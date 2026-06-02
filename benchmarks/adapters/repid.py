@@ -11,17 +11,27 @@ from pathlib import Path
 import uvloop
 from repid import AmqpServer, Repid, Router
 
+from benchmarks._processes import counter_incr_mmap
 from benchmarks._publishing import publish_async, publish_async_bursts
 from benchmarks._runtime import BenchmarkConfig, load_config
 from benchmarks._work import cpu_work, record_latency_to_file
 
-COUNTER_KIND = "value"
 config = load_config()
+COUNTER_KIND = "mmap" if config.task_kind == "cpu" else "value"
+WORKER_KIND = "multiprocessing"
 server = AmqpServer(dsn=config.amqp_url)
 app = Repid()
 app.servers.register_server("default", server, is_default=True)
 router = Router(channel=config.queue_name)
 _counter: Synchronized = Value(ctypes.c_long, 0)
+
+
+def _increment_counter() -> None:
+    if COUNTER_KIND == "mmap":
+        counter_incr_mmap(config.counter_path)
+        return
+    with _counter.get_lock():
+        _counter.value += 1
 
 
 if config.is_latency:
@@ -30,24 +40,21 @@ if config.is_latency:
     async def benchmark_task(enqueue_time: float) -> None:
         await asyncio.sleep(config.sleep_time)
         record_latency_to_file(config.latency_path, time.perf_counter() - enqueue_time)
-        with _counter.get_lock():
-            _counter.value += 1
+        _increment_counter()
 
 elif config.task_kind == "cpu":
 
-    @router.actor(run_in_process=False)
+    @router.actor(run_in_process=True)
     def benchmark_task() -> None:
         cpu_work(config.cpu_work_iterations)
-        with _counter.get_lock():
-            _counter.value += 1
+        _increment_counter()
 
 else:
 
     @router.actor
     async def benchmark_task() -> None:
         await asyncio.sleep(config.sleep_time)
-        with _counter.get_lock():
-            _counter.value += 1
+        _increment_counter()
 
 
 app.include_router(router)
@@ -75,19 +82,21 @@ def publish(cfg: BenchmarkConfig) -> None:
     uvloop.run(_publish_bursts(cfg) if cfg.mode == "burst" else _publish_all(cfg))
 
 
-async def _run(counter: Synchronized) -> None:
+async def _run(counter: Synchronized | None) -> None:
     global _counter
-    _counter = counter
+    if counter is not None:
+        _counter = counter
     async with server.connection():
         await app.run_worker(graceful_shutdown_time=0, tasks_limit=config.concurrency)
 
 
-def _worker_process(counter: Synchronized) -> None:
+def _worker_process(counter: Synchronized | None) -> None:
     uvloop.run(_run(counter))
 
 
 def start_workers(cfg: BenchmarkConfig, config_path: Path, counter: Synchronized | None = None) -> list[Process]:
-    assert counter is not None
+    if COUNTER_KIND == "value":
+        assert counter is not None
     processes = [Process(target=_worker_process, args=(counter,)) for _ in range(cfg.processes)]
     for process in processes:
         process.start()
