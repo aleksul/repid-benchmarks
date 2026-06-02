@@ -57,6 +57,7 @@ def config_hash(config: BenchmarkConfig) -> str:
         "concurrency": config.concurrency,
         "publish_concurrency": config.publish_concurrency,
         "publish_workers": config.publish_workers,
+        "publish_processes": config.publish_processes,
         "green_threads": config.green_threads,
     }, sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
@@ -132,14 +133,18 @@ def run_once(config: BenchmarkConfig) -> dict[str, float | int | str] | None:
 
     stdout_lines: list[str] = []
     stderr_data: list[str] = [""]
+    progress_width = [0]
 
     def _read_stdout() -> None:
         assert proc.stdout is not None
         for raw in proc.stdout:
             line = raw.rstrip("\r\n")
             stdout_lines.append(line)
-            if line.startswith("Enqueued:"):
-                print(f"  {line}  ", end="\r", flush=True)
+            if line.startswith(("Enqueued:", "Tasks done:")):
+                progress = f"  {line}  "
+                padding = " " * max(0, progress_width[0] - len(progress))
+                print(progress + padding, end="\r", flush=True)
+                progress_width[0] = len(progress)
 
     def _read_stderr() -> None:
         assert proc.stderr is not None
@@ -162,7 +167,7 @@ def run_once(config: BenchmarkConfig) -> dict[str, float | int | str] | None:
 
     t_out.join(timeout=30)
     t_err.join(timeout=30)
-    print(" " * 80, end="\r", flush=True)
+    print(" " * max(80, progress_width[0]), end="\r", flush=True)
 
     try:
         config_path.unlink()
@@ -202,6 +207,7 @@ def calibrate_message_counts(
     target_duration: float,
     amqp_url: str = "amqp://user:testtest@localhost:5672",
     mgmt_url: str | None = None,
+    publish_processes: int | None = None,
 ) -> dict[str, dict[float, int]]:
     if mgmt_url is None:
         mgmt_url = management_url_from_amqp(amqp_url)
@@ -227,6 +233,7 @@ def calibrate_message_counts(
                 concurrency=spec.concurrency,
                 publish_concurrency=spec.publish_concurrency,
                 publish_workers=spec.publish_workers,
+                publish_processes=publish_processes or spec.processes,
                 enqueue_batch_size=spec.enqueue_batch_size,
                 green_threads=spec.green_threads,
                 burst_size=DEFAULT_BURST_SIZE,
@@ -313,6 +320,13 @@ def main() -> None:
     parser.add_argument("--amqp-url", default="amqp://user:testtest@localhost:5672", metavar="URL")
     parser.add_argument("--rabbitmq-mgmt-url", default=None, metavar="URL")
     parser.add_argument("--time-limit", type=float, default=DEFAULT_TIME_LIMIT)
+    parser.add_argument(
+        "--publish-processes",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Publisher subprocesses per run (default: worker process count)",
+    )
     parser.add_argument("--burst-size", type=int, default=DEFAULT_BURST_SIZE)
     parser.add_argument("--burst-interval", type=float, default=DEFAULT_BURST_INTERVAL)
     parser.add_argument("--randomize-order", action="store_true", default=True, help="Randomize run order (default: True)")
@@ -325,6 +339,8 @@ def main() -> None:
     parser.add_argument("--counts-file", type=Path, default=None, metavar="FILE")
     parser.add_argument("--seed", type=int, default=None, metavar="N", help="Random seed for run order")
     args = parser.parse_args()
+    if args.publish_processes is not None and args.publish_processes < 1:
+        parser.error("--publish-processes must be at least 1")
 
     randomize = not args.no_randomize
     frameworks: list[str] = args.frameworks
@@ -353,6 +369,7 @@ def main() -> None:
             frameworks, all_sleep_times,
             target_duration=args.target_duration,
             amqp_url=args.amqp_url, mgmt_url=mgmt_url,
+            publish_processes=args.publish_processes,
         )
         print("\n=== Calibration Results ===\n")
         for fw in frameworks:
@@ -468,6 +485,7 @@ def main() -> None:
                 concurrency=spec.concurrency,
                 publish_concurrency=spec.publish_concurrency,
                 publish_workers=spec.publish_workers,
+                publish_processes=args.publish_processes or spec.processes,
                 enqueue_batch_size=spec.enqueue_batch_size,
                 green_threads=spec.green_threads,
                 burst_size=args.burst_size,
@@ -515,6 +533,7 @@ def main() -> None:
                 "concurrency": cfg.concurrency,
                 "publish_concurrency": cfg.publish_concurrency,
                 "publish_workers": cfg.publish_workers,
+                "publish_processes": cfg.publish_processes,
                 "green_threads": cfg.green_threads,
                 "python": platform.python_version(),
                 "timestamp": time.time(),

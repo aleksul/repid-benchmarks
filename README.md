@@ -67,6 +67,8 @@ python run_all.py --help
                       # random seed for run order
 --time-limit          300
                       # max seconds to wait for processing
+--publish-processes   N
+                      # publisher subprocesses per run (default: worker process count)
 --resume              # skip already-completed ok runs
                       # by loading the existing benchmarks_results.csv
 --calibrate           # run calibration to determine message counts per framework/sleep-time
@@ -130,8 +132,8 @@ python run_all.py --frameworks celery --amqp-url amqp://user:testtest@host:5672/
 
 `run_all.py` writes a runtime config for each run, resets a unique RabbitMQ
 queue, waits for workers to become consumers when workers start before publish,
-and cleans up the queue after the run. Timed-out runs are marked in the CSV
-with `status=timeout` and excluded from averages.
+and cleans up the queue plus framework auxiliary queues after the run. Timed-out
+runs are marked in the CSV with `status=timeout` and excluded from averages.
 
 ## Methodology notes
 

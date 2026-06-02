@@ -40,6 +40,7 @@ class BenchmarkConfig:
     latency_path: str | None = None
     keep_queue: bool = False
     worker_log_dir: str | None = None
+    publish_processes: int = 1
 
     @property
     def is_latency(self) -> bool:

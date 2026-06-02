@@ -20,6 +20,11 @@ broker = AioPikaBroker(
     config.amqp_url,
     qos=config.concurrency,
     task_queues=[TQQueue(name=config.queue_name, durable=True, type=QueueType.CLASSIC)],
+    dead_letter_queue=TQQueue(
+        name=f"{config.queue_name}.dead_letter",
+        durable=True,
+        type=QueueType.CLASSIC,
+    ),
 )
 
 

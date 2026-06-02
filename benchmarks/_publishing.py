@@ -9,21 +9,25 @@ from collections.abc import Awaitable, Callable
 
 
 async def publish_async(messages: int, concurrency: int, send: Callable[[], Awaitable[None]]) -> None:
-    sem = asyncio.Semaphore(concurrency)
-    tasks: list[asyncio.Task[None]] = []
+    if concurrency < 1:
+        raise ValueError("publish concurrency must be at least 1")
+    if messages < 1:
+        print(f"Enqueued: {messages}/{messages}", end="\r", flush=True)
+        return
 
-    async def _send() -> None:
-        await sem.acquire()
-        try:
+    next_message = 0
+    done = 0
+
+    async def _worker() -> None:
+        nonlocal done, next_message
+        while next_message < messages:
+            next_message += 1
             await send()
-        finally:
-            sem.release()
+            done += 1
+            if done % 2000 == 0:
+                print(f"Enqueued: {done}/{messages}", end="\r", flush=True)
 
-    for i in range(messages):
-        task = asyncio.create_task(_send())
-        tasks.append(task)
-        if (i + 1) % 2000 == 0:
-            print(f"Enqueued: {i + 1}/{messages}", end="\r", flush=True)
+    tasks = [asyncio.create_task(_worker()) for _ in range(min(concurrency, messages))]
     results = await asyncio.gather(*tasks, return_exceptions=True)
     errors = [r for r in results if isinstance(r, Exception)]
     if errors:

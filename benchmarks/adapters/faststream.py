@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import ctypes
+import os
 import time
 from multiprocessing import Process, Value
 from multiprocessing.sharedctypes import Synchronized
@@ -80,13 +81,31 @@ async def _run(counter: Synchronized) -> None:
     await app.run()
 
 
-def _worker_process(counter: Synchronized) -> None:
+def _redirect_worker_output(log_dir: str | None, name: str) -> None:
+    if log_dir:
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        output_path = Path(log_dir) / f"{name}.log"
+        fd = os.open(output_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o644)
+    else:
+        fd = os.open(os.devnull, os.O_WRONLY)
+    try:
+        os.dup2(fd, 1)
+        os.dup2(fd, 2)
+    finally:
+        os.close(fd)
+
+
+def _worker_process(counter: Synchronized, log_dir: str | None, name: str) -> None:
+    _redirect_worker_output(log_dir, name)
     uvloop.run(_run(counter))
 
 
 def start_workers(cfg: BenchmarkConfig, config_path: Path, counter: Synchronized | None = None) -> list[Process]:
     assert counter is not None
-    processes = [Process(target=_worker_process, args=(counter,)) for _ in range(cfg.processes)]
+    processes = [
+        Process(target=_worker_process, args=(counter, cfg.worker_log_dir, f"{cfg.name}-faststream-{i}"))
+        for i in range(cfg.processes)
+    ]
     for process in processes:
         process.start()
     return processes
