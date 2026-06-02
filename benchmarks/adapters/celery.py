@@ -21,6 +21,10 @@ celery_app.conf.task_queues = (
 )
 celery_app.conf.worker_enable_remote_control = False
 celery_app.conf.event_queue_exclusive = True
+celery_app.conf.worker_prefetch_multiplier = 1
+celery_app.conf.task_ignore_result = True
+celery_app.conf.result_backend = None
+celery_app.conf.worker_disable_rate_limits = True
 
 
 @celery_app.task(name="celery-bench", acks_late=True)

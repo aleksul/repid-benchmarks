@@ -69,12 +69,11 @@ def _run_value_counter(cfg: BenchmarkConfig, adapter: object, config_path: Path)
         else:
             print("Starting benchmark.")
             start = time.perf_counter()
-        tasks_done, timed_out, first_message_time = report_value(start, counter, cfg.messages, cfg.time_limit)
+        tasks_done, timed_out, _first_task_time = report_value(start, counter, cfg.messages, cfg.time_limit)
+        end = time.perf_counter()
     finally:
         _stop_workers(adapter, workers)
-    end = time.perf_counter()
-    duration_start = start if cfg.mode in {"streaming", "burst", "latency"} else first_message_time
-    return tasks_done, timed_out, duration_start, end
+    return tasks_done, timed_out, start, end
 
 
 def _run_mmap_counter(cfg: BenchmarkConfig, adapter: object, config_path: Path) -> tuple[int, bool, float, float]:
@@ -101,12 +100,11 @@ def _run_mmap_counter(cfg: BenchmarkConfig, adapter: object, config_path: Path) 
             else:
                 print("Starting benchmark.")
                 start = time.perf_counter()
-            tasks_done, timed_out, first_message_time = report_mmap(start, mm, cfg.messages, cfg.time_limit)
+            tasks_done, timed_out, _first_task_time = report_mmap(start, mm, cfg.messages, cfg.time_limit)
+            end = time.perf_counter()
         finally:
             _stop_workers(adapter, workers)
-    end = time.perf_counter()
-    duration_start = start if cfg.mode in {"streaming", "burst", "latency"} else first_message_time
-    return tasks_done, timed_out, duration_start, end
+    return tasks_done, timed_out, start, end
 
 
 def run(config_path: Path) -> None:
@@ -133,13 +131,15 @@ def run(config_path: Path) -> None:
 
     try:
         if getattr(adapter, "COUNTER_KIND") == "value":
-            tasks_done, timed_out, duration_start, end = _run_value_counter(cfg, adapter, config_path)
+            tasks_done, timed_out, start, end = _run_value_counter(cfg, adapter, config_path)
         else:
-            tasks_done, timed_out, duration_start, end = _run_mmap_counter(cfg, adapter, config_path)
+            tasks_done, timed_out, start, end = _run_mmap_counter(cfg, adapter, config_path)
 
+        duration = end - start
+        status = "timeout" if timed_out else "ok"
         if timed_out:
             purge_queue(cfg.amqp_url, cfg.rabbitmq_mgmt_url, cfg.queue_name)
-        print_results(tasks_done, end - duration_start)
+        print_results(tasks_done, cfg.messages, duration, status)
         if cfg.is_latency and cfg.latency_path:
             print_latency_results(read_latencies_from_file(cfg.latency_path))
     finally:

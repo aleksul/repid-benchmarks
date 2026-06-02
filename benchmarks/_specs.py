@@ -12,6 +12,7 @@ Framework = Literal["repid", "celery", "dramatiq", "faststream", "taskiq"]
 DEFAULT_SLEEP_TIMES = [0.01, 0.1, 0.5, 1.0, 5.0]
 LATENCY_SLEEP_TIMES = [0.01, 0.1, 0.5, 1.0]
 CPU_SLEEP_TIMES = [0.01, 0.1]
+DEFAULT_TARGET_DURATION = 15.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +32,9 @@ class BenchmarkSpec:
     messages: dict[float, int] | None = None
 
 
+# Fallback message counts used when --calibrate is not run and no --messages override
+# is given. These are approximate and may be stale; use --calibrate --target-duration
+# to produce calibrated counts adapted to your hardware and broker.
 BASE_MESSAGES: dict[str, dict[float, int]] = {
     "repid": {0.01: 200_000, 0.1: 200_000, 0.5: 200_000, 1.0: 200_000, 5.0: 100_000},
     "celery": {0.01: 30_000, 0.1: 25_000, 0.5: 25_000, 1.0: 20_000, 5.0: 20_000},

@@ -12,7 +12,7 @@ import argparse
 import csv
 from collections import defaultdict
 from pathlib import Path
-from statistics import mean, pstdev
+from statistics import mean, stdev
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
@@ -107,8 +107,9 @@ def split_framework(raw: str) -> tuple[str, str]:
     return raw, "base"
 
 
-def load_throughput(path: Path) -> CategoryData:
+def load_throughput(path: Path) -> tuple[CategoryData, dict[str, dict[float, int]]]:
     data: CategoryData = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    attempted: dict[str, dict[float, int]] = defaultdict(lambda: defaultdict(int))
     with path.open(newline="") as f:
         reader = csv.DictReader(f)
         required = {"framework", "sleep_time", "throughput_msg_per_sec"}
@@ -118,15 +119,19 @@ def load_throughput(path: Path) -> CategoryData:
         for row in reader:
             framework, category = split_framework(row["framework"])
             sleep_time = float(row["sleep_time"])
-            throughput = float(row["throughput_msg_per_sec"])
-            data[category][framework][sleep_time].append(throughput)
-    return data
+            status = row.get("status", "ok")
+            attempted[framework][sleep_time] += 1
+            if status == "ok" and row.get("throughput_msg_per_sec"):
+                throughput = float(row["throughput_msg_per_sec"])
+                data[category][framework][sleep_time].append(throughput)
+    return data, attempted
 
 
-def load_latency(path: Path) -> dict[str, dict[float, dict[str, list[float]]]]:
+def load_latency(path: Path) -> tuple[dict[str, dict[float, dict[str, list[float]]]], dict[str, dict[float, int]]]:
     data: dict[str, dict[float, dict[str, list[float]]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(list))
     )
+    attempted: dict[str, dict[float, int]] = defaultdict(lambda: defaultdict(int))
     with path.open(newline="") as f:
         reader = csv.DictReader(f)
         required = {
@@ -143,9 +148,14 @@ def load_latency(path: Path) -> dict[str, dict[float, dict[str, list[float]]]]:
         for row in reader:
             framework, _ = split_framework(row["framework"])
             sleep_time = float(row["sleep_time"])
-            for metric in ("throughput_msg_per_sec", "p50_ms", "p95_ms", "p99_ms"):
-                data[framework][sleep_time][metric].append(float(row[metric]))
-    return data
+            status = row.get("status", "ok")
+            attempted[framework][sleep_time] += 1
+            if status == "ok":
+                for metric in ("throughput_msg_per_sec", "p50_ms", "p95_ms", "p99_ms"):
+                    val = row.get(metric, "")
+                    if val:
+                        data[framework][sleep_time][metric].append(float(val))
+    return data, attempted
 
 
 def average(values: list[float]) -> float:
@@ -153,7 +163,7 @@ def average(values: list[float]) -> float:
 
 
 def stddev(values: list[float]) -> float:
-    return pstdev(values) if len(values) > 1 else 0.0
+    return stdev(values) if len(values) > 1 else 0.0
 
 
 def fmt_compact(value: float, _pos: object = None) -> str:
@@ -619,7 +629,7 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
 
     outputs: list[Path] = []
-    throughput = load_throughput(args.benchmarks_csv)
+    throughput, throughput_attempted = load_throughput(args.benchmarks_csv)
     if throughput:
         for category in sorted(throughput, key=category_sort_key):
             if category == "latency":
@@ -627,7 +637,7 @@ def main() -> None:
             outputs.append(plot_throughput_category(category, throughput[category], args.output_dir))
 
     if args.latency_csv.exists():
-        latency = load_latency(args.latency_csv)
+        latency, latency_attempted = load_latency(args.latency_csv)
         if latency:
             outputs.append(plot_latency_tradeoff(latency, args.output_dir))
             outputs.append(plot_latency_tradeoff_scatter(latency, args.output_dir))

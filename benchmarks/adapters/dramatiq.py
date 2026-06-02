@@ -30,17 +30,14 @@ def benchmark_task(enqueue_time: float | None = None) -> None:
 
 
 def _send() -> None:
-    local_broker = RabbitmqBroker(url=config.amqp_url)
     msg = benchmark_task.message(time.perf_counter()) if config.is_latency else benchmark_task.message()
-    local_broker.enqueue(msg)
+    broker.enqueue(msg)
 
 
 def _publish_chunk(count: int, progress: object) -> None:
-    local_broker = RabbitmqBroker(url=config.amqp_url)
     sent = 0
     for i in range(1, count + 1):
-        msg = benchmark_task.message(time.perf_counter()) if config.is_latency else benchmark_task.message()
-        local_broker.enqueue(msg)
+        _send()
         if i % config.enqueue_batch_size == 0:
             sent += config.enqueue_batch_size
             progress(config.enqueue_batch_size)  # type: ignore[operator]
@@ -60,5 +57,5 @@ def start_workers(cfg: BenchmarkConfig, config_path: Path, counter: object | Non
     if cfg.green_threads:
         args = ["dramatiq-gevent", "benchmarks.adapters.dramatiq", "-p", str(cfg.processes), "-t", str(cfg.concurrency)]
     else:
-        args = ["dramatiq", "benchmarks.adapters.dramatiq", "-p", str(cfg.processes)]
+        args = ["dramatiq", "benchmarks.adapters.dramatiq", "-p", str(cfg.processes), "-t", "1"]
     return [subprocess.Popen(args, **subprocess_kwargs(config_path, cfg.worker_log_dir, f"{cfg.name}-dramatiq"))]

@@ -64,7 +64,7 @@ def read_latencies_from_file(path: str) -> list[float]:
 
 def print_latency_results(latencies: list[float]) -> None:
     if not latencies:
-        print("No latency data collected.")
+        print("LATENCY_SAMPLES: 0")
         return
     values = sorted(latencies)
     n = len(values)
@@ -80,12 +80,17 @@ def print_latency_results(latencies: list[float]) -> None:
     print(f"LATENCY_P50: {p50:.4f}")
     print(f"LATENCY_P95: {p95:.4f}")
     print(f"LATENCY_P99: {p99:.4f}")
+    print(f"LATENCY_SAMPLES: {n}")
 
 
-def print_results(tasks_done: int, duration: float) -> None:
+def print_results(tasks_done: int, total: int, duration: float, status: str = "ok") -> None:
     duration = max(duration, 0.000001)
     throughput = tasks_done / duration
-    print("", "Benchmark ended.", f"Took {duration:.2f} sec.", f"Rate {throughput:.2f} msg/sec.", sep="\n")
+    print("", "Benchmark ended.", f"Took {duration:.2f} sec.", f"Processed {tasks_done}/{total} tasks.", f"Rate {throughput:.2f} msg/sec.", sep="\n")
+    print(f"STATUS: {status}")
+    print(f"TASKS_DONE: {tasks_done}")
+    print(f"TOTAL_MESSAGES: {total}")
+    print(f"DURATION_SECONDS: {duration:.4f}")
     print(f"THROUGHPUT: {throughput:.2f}")
 
 

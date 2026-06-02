@@ -90,10 +90,17 @@ def subprocess_kwargs(config_path: Path, log_dir: str | None, name: str) -> dict
         log = open(Path(log_dir) / f"{name}.log", "ab")
         kwargs["stdout"] = log
         kwargs["stderr"] = subprocess.STDOUT
+        kwargs["_log_handle"] = log
     else:
         kwargs["stdout"] = subprocess.DEVNULL
         kwargs["stderr"] = subprocess.DEVNULL
     return kwargs
+
+
+def close_subprocess_kwargs(kwargs: dict[str, object]) -> None:
+    log = kwargs.get("_log_handle")
+    if log is not None:
+        log.close()
 
 
 @contextmanager

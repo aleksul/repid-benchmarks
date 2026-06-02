@@ -5,6 +5,7 @@ import subprocess
 import time
 from pathlib import Path
 
+import uvloop
 from taskiq_aio_pika import AioPikaBroker
 from taskiq_aio_pika.queue import Queue as TQQueue, QueueType
 
@@ -57,7 +58,7 @@ async def _publish_bursts(cfg: BenchmarkConfig) -> None:
 
 
 def publish(cfg: BenchmarkConfig) -> None:
-    asyncio.run(_publish_bursts(cfg) if cfg.mode == "burst" else _publish_all(cfg))
+    uvloop.run(_publish_bursts(cfg) if cfg.mode == "burst" else _publish_all(cfg))
 
 
 def start_workers(cfg: BenchmarkConfig, config_path: Path, counter: object | None = None) -> list[subprocess.Popen]:

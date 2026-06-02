@@ -10,23 +10,24 @@ from collections.abc import Awaitable, Callable
 
 async def publish_async(messages: int, concurrency: int, send: Callable[[], Awaitable[None]]) -> None:
     sem = asyncio.Semaphore(concurrency)
-    pending: set[asyncio.Task[None]] = set()
+    tasks: list[asyncio.Task[None]] = []
 
     async def _send() -> None:
+        await sem.acquire()
         try:
             await send()
         finally:
             sem.release()
 
     for i in range(messages):
-        await sem.acquire()
         task = asyncio.create_task(_send())
-        pending.add(task)
-        task.add_done_callback(pending.discard)
+        tasks.append(task)
         if (i + 1) % 2000 == 0:
             print(f"Enqueued: {i + 1}/{messages}", end="\r", flush=True)
-    if pending:
-        await asyncio.gather(*pending)
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    errors = [r for r in results if isinstance(r, Exception)]
+    if errors:
+        raise RuntimeError(f"Publishing failed: {len(errors)} error(s), first: {errors[0]}")
     print(f"Enqueued: {messages}/{messages}", end="\r", flush=True)
 
 
@@ -57,6 +58,7 @@ def publish_threaded(
 ) -> None:
     lock = threading.Lock()
     done = [0]
+    errors: list[Exception] = []
     per_worker = messages // workers
     remainder = messages % workers
     counts = [per_worker + (1 if i < remainder else 0) for i in range(workers)]
@@ -64,7 +66,12 @@ def publish_threaded(
     def publish_chunk(count: int) -> None:
         local_done = 0
         for i in range(1, count + 1):
-            send()
+            try:
+                send()
+            except Exception as e:
+                with lock:
+                    errors.append(e)
+                return
             if i % batch_size == 0:
                 local_done += batch_size
                 with lock:
@@ -84,6 +91,8 @@ def publish_threaded(
         time.sleep(0.1)
     for thread in threads:
         thread.join()
+    if errors:
+        raise RuntimeError(f"Publishing failed: {len(errors)} error(s), first: {errors[0]}")
     print(f"Enqueued: {messages}/{messages}", end="\r", flush=True)
 
 
@@ -95,6 +104,7 @@ def publish_threaded_chunks(
 ) -> None:
     lock = threading.Lock()
     done = [0]
+    errors: list[Exception] = []
     per_worker = messages // workers
     remainder = messages % workers
     counts = [per_worker + (1 if i < remainder else 0) for i in range(workers)]
@@ -104,7 +114,11 @@ def publish_threaded_chunks(
             done[0] += amount
 
     def run_chunk(count: int) -> None:
-        publish_chunk(count, progress)
+        try:
+            publish_chunk(count, progress)
+        except Exception as e:
+            with lock:
+                errors.append(e)
 
     threads = [threading.Thread(target=run_chunk, args=(n,), daemon=True) for n in counts]
     for thread in threads:
@@ -116,6 +130,8 @@ def publish_threaded_chunks(
         time.sleep(0.1)
     for thread in threads:
         thread.join()
+    if errors:
+        raise RuntimeError(f"Publishing failed: {len(errors)} error(s), first: {errors[0]}")
     print(f"Enqueued: {messages}/{messages}", end="\r", flush=True)
 
 

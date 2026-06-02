@@ -10,6 +10,12 @@ import urllib.parse
 import urllib.request
 
 
+def amqp_vhost(amqp_url: str) -> str:
+    parsed = urllib.parse.urlparse(amqp_url)
+    vhost = parsed.path.lstrip("/") or "/"
+    return vhost
+
+
 def management_url_from_amqp(amqp_url: str) -> str:
     parsed = urllib.parse.urlparse(amqp_url)
     host = parsed.hostname or "localhost"
@@ -38,9 +44,14 @@ def _request(amqp_url: str, mgmt_url: str, path: str, method: str, data: bytes |
         return response.read()
 
 
+def _queue_path(queue_name: str, amqp_url: str, suffix: str = "") -> str:
+    vhost = urllib.parse.quote(amqp_vhost(amqp_url), safe="")
+    return f"/api/queues/{vhost}/{urllib.parse.quote(queue_name, safe='')}{suffix}"
+
+
 def delete_queue(amqp_url: str, mgmt_url: str, queue_name: str) -> None:
     try:
-        _request(amqp_url, mgmt_url, f"/api/queues/%2F/{urllib.parse.quote(queue_name, safe='')}", "DELETE")
+        _request(amqp_url, mgmt_url, _queue_path(queue_name, amqp_url), "DELETE")
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
@@ -48,12 +59,12 @@ def delete_queue(amqp_url: str, mgmt_url: str, queue_name: str) -> None:
 
 def declare_classic_queue(amqp_url: str, mgmt_url: str, queue_name: str) -> None:
     payload = json.dumps({"durable": True, "arguments": {}}).encode()
-    _request(amqp_url, mgmt_url, f"/api/queues/%2F/{urllib.parse.quote(queue_name, safe='')}", "PUT", payload)
+    _request(amqp_url, mgmt_url, _queue_path(queue_name, amqp_url), "PUT", payload)
 
 
 def purge_queue(amqp_url: str, mgmt_url: str, queue_name: str) -> None:
     try:
-        _request(amqp_url, mgmt_url, f"/api/queues/%2F/{urllib.parse.quote(queue_name, safe='')}/contents", "DELETE")
+        _request(amqp_url, mgmt_url, _queue_path(queue_name, amqp_url, "/contents"), "DELETE")
     except urllib.error.HTTPError as e:
         if e.code != 404:
             raise
@@ -67,7 +78,7 @@ def reset_queue(amqp_url: str, mgmt_url: str, queue_name: str) -> None:
 
 def queue_consumer_count(amqp_url: str, mgmt_url: str, queue_name: str) -> int:
     try:
-        raw = _request(amqp_url, mgmt_url, f"/api/queues/%2F/{urllib.parse.quote(queue_name, safe='')}", "GET")
+        raw = _request(amqp_url, mgmt_url, _queue_path(queue_name, amqp_url), "GET")
     except urllib.error.HTTPError as e:
         if e.code == 404:
             return 0
