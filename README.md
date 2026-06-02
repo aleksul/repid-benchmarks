@@ -26,8 +26,8 @@ All frameworks run against **RabbitMQ** as the message broker:
 
 ## Running all benchmarks
 
-Use the orchestrator to run every framework across a range of sleep times and
-collect throughput statistics (mean ± std over 5 runs):
+Use the orchestrator to run every benchmark spec across a range of sleep times
+and collect throughput statistics (mean ± std over 5 runs):
 
 ```bash
 python run_all.py
@@ -40,8 +40,8 @@ Results are printed as an ASCII table and saved to `benchmarks_results.csv`.
 ```
 python run_all.py --help
 
---frameworks          repid celery celery_nogt dramatiq dramatiq_nogt faststream taskiq
-                      # subset of frameworks to run (default: all)
+--frameworks          repid celery celery_nogt dramatiq dramatiq_nogt faststream taskiq ...
+                      # subset of benchmark specs to run (default: all)
 --sleep-times         0.01 0.1 0.5 1.0 5.0
                       # task sleep durations in seconds (default: as shown)
 --runs                5
@@ -57,6 +57,11 @@ python run_all.py --help
                       # AMQP broker URL passed to every benchmark
 --rabbitmq-mgmt-url   http://localhost:15672
                       # RabbitMQ management HTTP URL (derived from --amqp-url by default)
+--warmup-runs         N
+                      # warmup repetitions that are not written to CSV
+--randomize-order     # randomize run order to reduce order bias
+--time-limit          300
+                      # max seconds to wait for processing
 --resume              # skip already-completed (framework, sleep_time, run) triples
                       # by loading the existing benchmarks_results.csv
 ```
@@ -81,30 +86,16 @@ Charts are saved to `benchmark_charts/`:
 | `latency_tradeoff.svg` | Throughput plus p50, p95, and p99 latency from latency-instrumented runs |
 | `latency_tradeoff_scatter.svg` | p95 latency vs throughput tradeoff; upper-left is best |
 
-## Running a single benchmark
+## Running Specific Benchmarks
 
-Each file lives in `benchmarks/` and can be run standalone. The following
-environment variables are supported:
-
-| Variable | Default | Description |
-|---|---|---|
-| `SLEEP_TIME` | `1.0` | Task sleep duration (seconds) |
-| `MESSAGES_AMOUNT` | `80000` | Number of messages to enqueue |
-| `TIME_LIMIT` | `300` | Max seconds to wait for processing |
-| `AMQP_URL` | `amqp://user:testtest@localhost:5672` | AMQP broker URL |
-| `RABBITMQ_MGMT_URL` | derived from `AMQP_URL` | RabbitMQ management HTTP URL |
-| `CPU_WORK_ITERATIONS` | unset | Fixed hash iterations per CPU task; required when running CPU benchmark files directly |
-| `CPU_WORK_CALIBRATION_SECONDS` | `0.25` | Seconds `run_all.py` uses to calibrate CPU iterations when `CPU_WORK_ITERATIONS` is unset |
+Direct per-variant benchmark files are intentionally not supported. Run one or
+more specs through `run_all.py` instead:
 
 ```bash
-SLEEP_TIME=0.1 MESSAGES_AMOUNT=1000 python benchmarks/bench_repid.py
-python benchmarks/bench_celery.py
-python benchmarks/bench_celery_nogt.py
-python benchmarks/bench_dramatiq.py
-python benchmarks/bench_dramatiq_nogt.py
-python benchmarks/bench_faststream.py
-python benchmarks/bench_taskiq.py
+python run_all.py --frameworks repid taskiq_latency --sleep-times 0.1 --runs 1
+python run_all.py --frameworks celery --amqp-url amqp://user:testtest@host:5672/
 ```
 
-Every benchmark automatically purges its queue before enqueueing, so no
-manual queue cleanup is needed between runs.
+`run_all.py` writes a runtime config for each run, resets a unique RabbitMQ
+queue, waits for workers to become consumers when workers start before publish,
+and cleans up the queue after the run.

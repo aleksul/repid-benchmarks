@@ -209,4 +209,5 @@ __marimo__/
 benchmarks_results.csv
 benchmarks_chart.svg
 latency_results.csv
+benchmarks_metadata.jsonl
 benchmark_charts
