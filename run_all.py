@@ -184,6 +184,10 @@ def run_once(config: BenchmarkConfig) -> dict[str, float | int | str] | None:
             print(stderr_data[0][-4000:])
         return {"status": "error"}
 
+    warnings = "\n".join(line for line in stderr_data[0].splitlines() if line.startswith("[WARN]"))
+    if warnings:
+        print(warnings)
+
     stdout = "\n".join(stdout_lines)
     parsed = parse_runner_output(stdout)
     if parsed is None:

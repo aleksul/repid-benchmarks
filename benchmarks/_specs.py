@@ -13,6 +13,9 @@ DEFAULT_SLEEP_TIMES = [0.01, 0.1, 0.5, 1.0, 5.0]
 LATENCY_SLEEP_TIMES = [0.01, 0.1, 0.5, 1.0]
 CPU_SLEEP_TIMES = [0.01, 0.1]
 DEFAULT_TARGET_DURATION = 15.0
+HIGH_CONCURRENCY_MESSAGE_CAP = 75_000
+STREAMING_MESSAGE_CAP = 150_000
+BURST_MESSAGE_CAP = 75_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,7 +49,11 @@ BASE_MESSAGES: dict[str, dict[float, int]] = {
 }
 
 CPU_MESSAGES = {0.01: 4_000, 0.1: 1_000}
-LATENCY_MESSAGES = {0.01: 20_000, 0.1: 20_000, 0.5: 20_000, 1.0: 20_000}
+LATENCY_MESSAGES = {0.01: 10_000, 0.1: 10_000, 0.5: 10_000, 1.0: 10_000}
+
+
+def _cap_messages(messages: dict[float, int], cap: int) -> dict[float, int]:
+    return {sleep_time: min(count, cap) for sleep_time, count in messages.items()}
 
 
 def _queue(framework: str, mode: str) -> str:
@@ -67,10 +74,10 @@ def _framework_specs(framework: Framework, publish_workers: int, publish_concurr
     base_messages = BASE_MESSAGES[framework]
     return [
         _spec(framework, framework, "base", messages=base_messages, publish_workers=publish_workers, publish_concurrency=publish_concurrency),
-        _spec(f"{framework}_hc", framework, "hc", concurrency=10000, messages=base_messages, publish_workers=publish_workers, publish_concurrency=publish_concurrency),
+        _spec(f"{framework}_hc", framework, "hc", concurrency=10000, messages=_cap_messages(base_messages, HIGH_CONCURRENCY_MESSAGE_CAP), publish_workers=publish_workers, publish_concurrency=publish_concurrency),
         _spec(f"{framework}_cpu", framework, "cpu", task_kind="cpu", sleep_times=tuple(CPU_SLEEP_TIMES), messages=CPU_MESSAGES, publish_workers=publish_workers, publish_concurrency=publish_concurrency),
-        _spec(f"{framework}_streaming", framework, "streaming", messages=base_messages, publish_workers=publish_workers, publish_concurrency=publish_concurrency),
-        _spec(f"{framework}_burst", framework, "burst", messages=base_messages, publish_workers=publish_workers, publish_concurrency=publish_concurrency),
+        _spec(f"{framework}_streaming", framework, "streaming", messages=_cap_messages(base_messages, STREAMING_MESSAGE_CAP), publish_workers=publish_workers, publish_concurrency=publish_concurrency),
+        _spec(f"{framework}_burst", framework, "burst", messages=_cap_messages(base_messages, BURST_MESSAGE_CAP), publish_workers=publish_workers, publish_concurrency=publish_concurrency),
         _spec(f"{framework}_latency", framework, "latency", sleep_times=tuple(LATENCY_SLEEP_TIMES), messages=LATENCY_MESSAGES, publish_workers=publish_workers, publish_concurrency=publish_concurrency),
     ]
 

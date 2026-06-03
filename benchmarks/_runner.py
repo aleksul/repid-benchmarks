@@ -46,14 +46,29 @@ def _run_queue_names(cfg: BenchmarkConfig) -> list[str]:
     return [cfg.queue_name, *_auxiliary_queue_names(cfg)]
 
 
-def _delete_run_queues(cfg: BenchmarkConfig) -> None:
-    for queue_name in _run_queue_names(cfg):
-        delete_queue(cfg.amqp_url, cfg.rabbitmq_mgmt_url, queue_name)
+def _cleanup_warning(action: str, queue_name: str, exc: Exception) -> None:
+    detail = str(exc) or exc.__class__.__name__
+    print(f"[WARN] Could not {action} RabbitMQ queue {queue_name!r}: {detail}", file=sys.stderr, flush=True)
 
 
-def _purge_run_queues(cfg: BenchmarkConfig) -> None:
+def _delete_run_queues(cfg: BenchmarkConfig, *, best_effort: bool = False) -> None:
     for queue_name in _run_queue_names(cfg):
-        purge_queue(cfg.amqp_url, cfg.rabbitmq_mgmt_url, queue_name)
+        try:
+            delete_queue(cfg.amqp_url, cfg.rabbitmq_mgmt_url, queue_name)
+        except Exception as exc:
+            if not best_effort:
+                raise
+            _cleanup_warning("delete", queue_name, exc)
+
+
+def _purge_run_queues(cfg: BenchmarkConfig, *, best_effort: bool = False) -> None:
+    for queue_name in _run_queue_names(cfg):
+        try:
+            purge_queue(cfg.amqp_url, cfg.rabbitmq_mgmt_url, queue_name)
+        except Exception as exc:
+            if not best_effort:
+                raise
+            _cleanup_warning("purge", queue_name, exc)
 
 
 def _split_messages(messages: int, processes: int) -> list[int]:
@@ -317,15 +332,15 @@ def run(config_path: Path) -> None:
         duration = end - start
         status = "timeout" if timed_out else "ok"
         if timed_out:
-            _purge_run_queues(cfg)
+            _purge_run_queues(cfg, best_effort=True)
         print_results(tasks_done, cfg.messages, duration, status)
         if cfg.is_latency and cfg.latency_path:
             print_latency_results(read_latencies_from_file(cfg.latency_path))
     finally:
         if cfg.keep_queue:
-            _purge_run_queues(cfg)
+            _purge_run_queues(cfg, best_effort=True)
         else:
-            _delete_run_queues(cfg)
+            _delete_run_queues(cfg, best_effort=True)
         for path in cleanup_paths:
             try:
                 os.unlink(path)

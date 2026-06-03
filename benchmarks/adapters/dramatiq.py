@@ -13,6 +13,7 @@ from benchmarks._runtime import BenchmarkConfig, load_config
 from benchmarks._work import cpu_work, record_latency_to_file
 
 COUNTER_KIND = "mmap"
+WORKER_SHUTDOWN_TIMEOUT_MS = 1000
 config = load_config()
 broker = RabbitmqBroker(url=config.amqp_url)
 dramatiq.set_broker(broker)
@@ -54,8 +55,25 @@ def publish(cfg: BenchmarkConfig) -> None:
 
 
 def start_workers(cfg: BenchmarkConfig, config_path: Path, counter: object | None = None) -> list[subprocess.Popen]:
+    shutdown_args = ["--worker-shutdown-timeout", str(WORKER_SHUTDOWN_TIMEOUT_MS)]
     if cfg.green_threads:
-        args = ["dramatiq-gevent", "benchmarks.adapters.dramatiq", "-p", str(cfg.processes), "-t", str(cfg.concurrency)]
+        args = [
+            "dramatiq-gevent",
+            "benchmarks.adapters.dramatiq",
+            "-p",
+            str(cfg.processes),
+            "-t",
+            str(cfg.concurrency),
+            *shutdown_args,
+        ]
     else:
-        args = ["dramatiq", "benchmarks.adapters.dramatiq", "-p", str(cfg.processes), "-t", "1"]
+        args = [
+            "dramatiq",
+            "benchmarks.adapters.dramatiq",
+            "-p",
+            str(cfg.processes),
+            "-t",
+            "1",
+            *shutdown_args,
+        ]
     return [subprocess.Popen(args, **subprocess_kwargs(config_path, cfg.worker_log_dir, f"{cfg.name}-dramatiq"))]
