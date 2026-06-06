@@ -12,6 +12,7 @@ import argparse
 import csv
 import hashlib
 import json
+import math
 import os
 import random
 import re
@@ -21,6 +22,7 @@ import sys
 import threading
 import time
 import uuid
+from collections import Counter
 from pathlib import Path
 from statistics import mean, stdev
 import platform
@@ -35,6 +37,7 @@ DEFAULT_RUNS = 5
 DEFAULT_TIME_LIMIT = 300.0
 DEFAULT_BURST_SIZE = 5000
 DEFAULT_BURST_INTERVAL = 1.0
+STEADY_MESSAGE_MARGIN = 1.25
 
 THROUGHPUT_CSV_HEADER = [
     "framework",
@@ -259,6 +262,17 @@ def calibration_messages(sleep_time: float) -> int:
         return 30
 
 
+def steady_message_floor(name: str, sleep_time: float, window_seconds: float) -> int | None:
+    spec = get_spec(name)
+    if spec.mode != "steady":
+        return None
+    base_messages = (get_spec(spec.framework).messages or {}).get(sleep_time)
+    if base_messages is None:
+        return None
+    estimate = base_messages * max(window_seconds, 0.0) / DEFAULT_TARGET_DURATION * STEADY_MESSAGE_MARGIN
+    return max(1_000, math.ceil(estimate / 1_000) * 1_000)
+
+
 def calibrate_message_counts(
     frameworks: list[str],
     sleep_times_by_fw: dict[str, list[float]],
@@ -352,9 +366,15 @@ def print_latency_table(frameworks: list[str], sleep_times: list[float], results
         print(sep)
 
 
-def suggest_message_counts(frameworks: list[str], sleep_times: list[float], results: dict[str, dict[float, list[float]]], target_seconds: float = DEFAULT_TARGET_DURATION) -> None:
+def suggest_message_counts(
+    frameworks: list[str],
+    sleep_times: list[float],
+    results: dict[str, dict[float, list[float]]],
+    target_seconds: float = DEFAULT_TARGET_DURATION,
+    steady_window_seconds: float = DEFAULT_TARGET_DURATION,
+) -> None:
     print("\n" + "-" * 72)
-    print(f"  Suggested message counts (target ~= {target_seconds:.0f}s/run)")
+    print(f"  Suggested message counts (target ~= {target_seconds:.0f}s/run; steady covers window)")
     print("-" * 72)
     for fw in frameworks:
         print(f"{fw}:")
@@ -364,6 +384,9 @@ def suggest_message_counts(frameworks: list[str], sleep_times: list[float], resu
                 continue
             avg = mean(vals)
             n = max(1_000, round(avg * target_seconds / 1_000) * 1_000)
+            steady_floor = steady_message_floor(fw, st, steady_window_seconds)
+            if steady_floor is not None:
+                n = max(n, steady_floor)
             print(f"  {st}: {n:_}  # avg {avg:.0f} msg/s")
 
 
@@ -454,10 +477,22 @@ def main() -> None:
             return fw_overrides[name]
         if args.messages is not None:
             return args.messages
+        messages: int | None
         if calibrated_counts and name in calibrated_counts and sleep_time in calibrated_counts[name]:
-            return calibrated_counts[name][sleep_time]
-        table = get_spec(name).messages or {}
-        return table.get(sleep_time)
+            messages = calibrated_counts[name][sleep_time]
+        else:
+            table = get_spec(name).messages or {}
+            messages = table.get(sleep_time)
+        if messages is None:
+            return None
+        steady_floor = steady_message_floor(
+            name,
+            sleep_time,
+            args.steady_warmup_seconds + args.steady_measurement_seconds,
+        )
+        if steady_floor is not None:
+            return max(messages, steady_floor)
+        return messages
 
     fw_sleep_times = {fw: sleep_times_for(fw) for fw in frameworks}
     table_sleep_times = sorted({st for sts in fw_sleep_times.values() for st in sts})
@@ -703,10 +738,17 @@ def main() -> None:
     if latency_fws:
         print(f"Latency results saved to {latency_csv_path}")
 
-    failed = sum(1 for s in run_status.values() if s != "ok")
-    if failed:
-        print(f"\n[WARN] {failed} run(s) had non-ok status (timeout/error)")
-    suggest_message_counts(frameworks, table_sleep_times, throughput_results, args.target_duration)
+    non_ok = Counter(s for s in run_status.values() if s != "ok")
+    if non_ok:
+        details = ", ".join(f"{status}={count}" for status, count in sorted(non_ok.items()))
+        print(f"\n[WARN] {sum(non_ok.values())} run(s) had non-ok status ({details})")
+    suggest_message_counts(
+        frameworks,
+        table_sleep_times,
+        throughput_results,
+        args.target_duration,
+        args.steady_warmup_seconds + args.steady_measurement_seconds,
+    )
 
 
 if __name__ == "__main__":

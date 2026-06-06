@@ -179,6 +179,9 @@ runs are marked in the CSV with `status=timeout` and excluded from averages.
   run to fail with `status=error`.
 - **Message counts**: hard-coded per framework by default; use `--calibrate` to
   derive counts that target equal run duration across frameworks.
+- **Steady source budget**: steady runs automatically raise the default message
+  budget to cover the warmup plus measurement window; explicit `--messages` and
+  `--messages-per-framework` values are used as-is.
 - **CPU mode**: CPU-bound runs use CPU-oriented worker settings where the
   framework exposes them: Celery uses prefork, Dramatiq uses regular
   non-gevent workers, and async frameworks avoid large in-process async

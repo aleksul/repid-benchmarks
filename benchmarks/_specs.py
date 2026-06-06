@@ -17,6 +17,8 @@ HIGH_CONCURRENCY_MESSAGE_CAP = 75_000
 BURST_MESSAGE_CAP = 75_000
 LONG_TASK_DRAIN_MESSAGES = 160_000
 BURST_PREFETCH = 100
+# Minimum source budgets for steady runs. run_all.py raises these when the
+# configured warmup + measurement window needs a larger publish budget.
 STEADY_MESSAGES = {0.01: 1_000_000, 0.1: 750_000, 0.5: 400_000, 1.0: 300_000, 5.0: 200_000}
 
 
