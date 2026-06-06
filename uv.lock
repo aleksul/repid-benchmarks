@@ -1161,14 +1161,14 @@ wheels = [
 
 [[package]]
 name = "repid"
-version = "2.1.1"
+version = "2.1.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "packaging" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/19/c8/c469680921b102a136100229596d01366317ebbea8de748561e44e083d21/repid-2.1.1.tar.gz", hash = "sha256:686b7186cef5369e424e5e2d9ef21d6a74e34466d357f4ae8e24344bf03de1d9", size = 499128, upload-time = "2026-05-31T12:52:42.488Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/85/4c/4305427ea9653da7564ad11d258ddf4f1a0c2b64a350618ca7d26d58fbb0/repid-2.1.2.tar.gz", hash = "sha256:67c799f0a481b755e4830a1acadf98ef6170d3bd483b32c87066a3e67d47bd6f", size = 506039, upload-time = "2026-06-06T13:36:34.027Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/76/ac/cafed4fd106a72ae6ba86b5430d7247e26948e5877b366c7b307c288938b/repid-2.1.1-py3-none-any.whl", hash = "sha256:e7e378c2432d12597bf9e95b9179a59e7610cdc8af69c6c2d60d2aa0383a6fe7", size = 187662, upload-time = "2026-05-31T12:52:43.816Z" },
+    { url = "https://files.pythonhosted.org/packages/77/59/2e0b84a46e6b22bff29cb212fe3b8d7a615aa1935150e1a9074985ab1003/repid-2.1.2-py3-none-any.whl", hash = "sha256:eea06390a96b9fc125ed74ee932bccb70d8c492b13ab64ab09270b24e15124a7", size = 188479, upload-time = "2026-06-06T13:36:32.467Z" },
 ]
 
 [[package]]
@@ -1196,7 +1196,7 @@ requires-dist = [
     { name = "gevent", specifier = ">=25.9.1" },
     { name = "matplotlib", specifier = ">=3.10.8" },
     { name = "redis", specifier = ">=7.3.0" },
-    { name = "repid", extras = ["amqp"], specifier = ">=2.1.1" },
+    { name = "repid", extras = ["amqp"], specifier = ">=2.1.2" },
     { name = "taskiq", specifier = ">=0.12.4" },
     { name = "taskiq-aio-pika", specifier = ">=0.6.0" },
     { name = "uvloop", specifier = ">=0.22.1" },
