@@ -9,7 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Literal
 
-Mode = Literal["base", "hc", "cpu", "streaming", "burst", "latency", "nogt"]
+Mode = Literal["base", "hc", "cpu", "burst", "latency", "steady", "nogt"]
 TaskKind = Literal["io", "cpu"]
 
 CONFIG_ENV = "BENCHMARK_CONFIG_PATH"
@@ -35,12 +35,19 @@ class BenchmarkConfig:
     green_threads: bool
     burst_size: int
     burst_interval: float
+    prefetch_count: int | None = None
     cpu_work_iterations: int | None = None
     counter_path: str | None = None
     latency_path: str | None = None
     keep_queue: bool = False
     worker_log_dir: str | None = None
     publish_processes: int = 1
+    steady_warmup_seconds: float = 10.0
+    steady_measurement_seconds: float = 30.0
+    latency_arrival_rate: float = 1000.0
+    latency_warmup_seconds: float = 10.0
+    latency_measurement_seconds: float = 30.0
+    burst_multiplier: float = 2.0
 
     @property
     def is_latency(self) -> bool:

@@ -10,15 +10,16 @@ from taskiq_aio_pika import AioPikaBroker
 from taskiq_aio_pika.queue import Queue as TQQueue, QueueType
 
 from benchmarks._processes import counter_incr_mmap, subprocess_kwargs
-from benchmarks._publishing import publish_async, publish_async_bursts
+from benchmarks._publishing import publish_async, publish_async_at_rate, publish_async_bursts
 from benchmarks._runtime import BenchmarkConfig, load_config
 from benchmarks._work import cpu_work, record_latency_to_file
 
 COUNTER_KIND = "mmap"
 config = load_config()
+prefetch_count = config.prefetch_count or config.concurrency
 broker = AioPikaBroker(
     config.amqp_url,
-    qos=config.concurrency,
+    qos=prefetch_count,
     task_queues=[TQQueue(name=config.queue_name, durable=True, type=QueueType.CLASSIC)],
     dead_letter_queue=TQQueue(
         name=f"{config.queue_name}.dead_letter",
@@ -46,6 +47,10 @@ async def _send() -> None:
         await benchmark_task.kiq()
 
 
+async def _send_latency(record: bool) -> None:
+    await benchmark_task.kiq(time.perf_counter() if record else None)
+
+
 async def _publish_all(cfg: BenchmarkConfig) -> None:
     await broker.startup()
     try:
@@ -66,6 +71,17 @@ def publish(cfg: BenchmarkConfig) -> None:
     uvloop.run(_publish_bursts(cfg) if cfg.mode == "burst" else _publish_all(cfg))
 
 
+def publish_latency(cfg: BenchmarkConfig, messages: int, rate_per_second: float, record: bool) -> None:
+    async def _run() -> None:
+        await broker.startup()
+        try:
+            await publish_async_at_rate(messages, rate_per_second, lambda: _send_latency(record))
+        finally:
+            await broker.shutdown()
+
+    uvloop.run(_run())
+
+
 def start_workers(cfg: BenchmarkConfig, config_path: Path, counter: object | None = None) -> list[subprocess.Popen]:
     args = [
         "taskiq",
@@ -78,7 +94,7 @@ def start_workers(cfg: BenchmarkConfig, config_path: Path, counter: object | Non
         "--max-async-tasks",
         str(cfg.concurrency),
         "--max-prefetch",
-        str(cfg.concurrency),
+        str(cfg.prefetch_count or cfg.concurrency),
         "--ack-type",
         "when_executed",
     ]

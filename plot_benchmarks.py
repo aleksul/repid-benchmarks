@@ -23,24 +23,24 @@ BENCHMARKS_CSV = ROOT / "benchmarks_results.csv"
 LATENCY_CSV = ROOT / "latency_results.csv"
 OUTPUT_DIR = ROOT / "benchmark_charts"
 
-KNOWN_CATEGORIES = ("hc", "cpu", "streaming", "burst", "latency")
+KNOWN_CATEGORIES = ("hc", "cpu", "burst", "latency", "steady")
 
 CATEGORY_DISPLAY = {
     "base": "Base I/O-bound",
     "hc": "High concurrency",
     "cpu": "CPU-bound",
-    "streaming": "Streaming publish/consume",
     "burst": "Bursty load",
     "latency": "Latency-instrumented",
+    "steady": "Steady-state windowed",
 }
 
 CATEGORY_NOTES = {
     "base": "Default queue-drain benchmark.",
     "hc": "High worker concurrency; higher throughput is better.",
     "cpu": "CPU-bound task duration; higher throughput is better.",
-    "streaming": "Publishing continues while workers consume; higher throughput is better.",
-    "burst": "Messages are published in bursts; higher throughput is better.",
+    "burst": "Burst recovery benchmark; recovery time is primary, throughput is secondary.",
     "latency": "Latency-instrumented throughput; higher throughput is better.",
+    "steady": "Fixed-window measurement after warmup; final drain is intentionally ignored.",
 }
 
 FRAMEWORK_ORDER = ["repid", "faststream", "dramatiq", "taskiq", "celery"]
@@ -127,6 +127,42 @@ def load_throughput(path: Path) -> tuple[CategoryData, dict[str, dict[float, int
     return data, attempted
 
 
+def load_tail(path: Path, metric: str = "tail_99_to_100_seconds") -> CategoryData:
+    data: CategoryData = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    with path.open(newline="") as f:
+        reader = csv.DictReader(f)
+        required = {"framework", "sleep_time", metric}
+        if not required.issubset(set(reader.fieldnames or [])):
+            return data
+        for row in reader:
+            framework, category = split_framework(row["framework"])
+            if category == "steady":
+                continue
+            status = row.get("status", "ok")
+            value = row.get(metric, "")
+            if status == "ok" and value:
+                data[category][framework][float(row["sleep_time"])].append(float(value))
+    return data
+
+
+def load_category_metric(path: Path, metric: str, category_filter: set[str] | None = None) -> CategoryData:
+    data: CategoryData = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    with path.open(newline="") as f:
+        reader = csv.DictReader(f)
+        required = {"framework", "sleep_time", metric}
+        if not required.issubset(set(reader.fieldnames or [])):
+            return data
+        for row in reader:
+            framework, category = split_framework(row["framework"])
+            if category_filter is not None and category not in category_filter:
+                continue
+            status = row.get("status", "ok")
+            value = row.get(metric, "")
+            if status == "ok" and value:
+                data[category][framework][float(row["sleep_time"])].append(float(value))
+    return data
+
+
 def load_latency(path: Path) -> tuple[dict[str, dict[float, dict[str, list[float]]]], dict[str, dict[float, int]]]:
     data: dict[str, dict[float, dict[str, list[float]]]] = defaultdict(
         lambda: defaultdict(lambda: defaultdict(list))
@@ -190,7 +226,7 @@ def framework_sort_key(framework: str) -> tuple[int, str]:
 
 
 def category_sort_key(category: str) -> tuple[int, str]:
-    order = ["base", "hc", "cpu", "streaming", "burst", "latency"]
+    order = ["base", "hc", "cpu", "burst", "steady", "latency"]
     try:
         return order.index(category), category
     except ValueError:
@@ -340,17 +376,100 @@ def plot_throughput_category(category: str, data: Series, output_dir: Path) -> P
     return output
 
 
+def plot_tail_category(category: str, data: Series, output_dir: Path) -> Path:
+    sleep_times = sorted({sleep_time for points in data.values() for sleep_time in points})
+    fig, ax = plt.subplots(figsize=(11.5, 7.0))
+    fig.subplots_adjust(left=0.09, right=0.78, top=0.82, bottom=0.13)
+
+    plot_series(ax, data, None, show_std=True)
+    apply_axis_style(ax, sleep_times, "Seconds from 99% to 100%")
+
+    fig.text(
+        0.09,
+        0.965,
+        f"{CATEGORY_DISPLAY.get(category, category.title())} Tail Drain",
+        ha="left",
+        va="top",
+        fontsize=18,
+        fontweight="bold",
+        color="#0F172A",
+    )
+    fig.text(
+        0.09,
+        0.915,
+        "Time spent processing the final 1% of completed messages. Lower is better.",
+        ha="left",
+        va="top",
+        fontsize=10,
+        color="#64748B",
+    )
+
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(
+        handles,
+        labels,
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        frameon=False,
+        fontsize=9.5,
+    )
+
+    output = output_dir / f"tail_99_to_100_{category}.svg"
+    fig.savefig(output, format="svg")
+    plt.close(fig)
+    return output
+
+
+def plot_recovery_category(category: str, data: Series, output_dir: Path) -> Path:
+    sleep_times = sorted({sleep_time for points in data.values() for sleep_time in points})
+    fig, ax = plt.subplots(figsize=(11.5, 7.0))
+    fig.subplots_adjust(left=0.09, right=0.78, top=0.82, bottom=0.13)
+
+    plot_series(ax, data, None, show_std=True)
+    apply_axis_style(ax, sleep_times, "Recovery seconds")
+
+    fig.text(
+        0.09,
+        0.965,
+        f"{CATEGORY_DISPLAY.get(category, category.title())} Recovery",
+        ha="left",
+        va="top",
+        fontsize=18,
+        fontweight="bold",
+        color="#0F172A",
+    )
+    fig.text(
+        0.09,
+        0.915,
+        "Time from burst publish completion to all burst messages completed. Lower is better.",
+        ha="left",
+        va="top",
+        fontsize=10,
+        color="#64748B",
+    )
+
+    handles, labels = ax.get_legend_handles_labels()
+    ax.legend(
+        handles,
+        labels,
+        loc="center left",
+        bbox_to_anchor=(1.02, 0.5),
+        frameon=False,
+        fontsize=9.5,
+    )
+
+    output = output_dir / f"recovery_{category}.svg"
+    fig.savefig(output, format="svg")
+    plt.close(fig)
+    return output
+
+
 def latency_metric_series(
     data: dict[str, dict[float, dict[str, list[float]]]],
     metric: str,
-    include_taskiq: bool | None,
 ) -> Series:
     series: Series = defaultdict(lambda: defaultdict(list))
     for framework, by_sleep in data.items():
-        if include_taskiq is False and framework == "taskiq":
-            continue
-        if include_taskiq is True and framework != "taskiq":
-            continue
         for sleep_time, values in by_sleep.items():
             series[framework][sleep_time] = values[metric]
     return series
@@ -361,14 +480,14 @@ def plot_latency_tradeoff(
 ) -> Path:
     metrics = [("p50_ms", "p50 latency"), ("p95_ms", "p95 latency"), ("p99_ms", "p99 latency")]
     sleep_times = sorted({sleep_time for by_sleep in data.values() for sleep_time in by_sleep})
-    fig = plt.figure(figsize=(17, 11.0))
-    grid = fig.add_gridspec(3, 3, height_ratios=[1.35, 2.4, 0.95])
-    fig.subplots_adjust(left=0.06, right=0.84, top=0.84, bottom=0.08, wspace=0.24, hspace=0.55)
+    fig = plt.figure(figsize=(17, 9.2))
+    grid = fig.add_gridspec(2, 3, height_ratios=[1.25, 2.4])
+    fig.subplots_adjust(left=0.06, right=0.84, top=0.82, bottom=0.1, wspace=0.24, hspace=0.42)
 
     throughput_ax = fig.add_subplot(grid[0, :])
     plot_series(
         throughput_ax,
-        latency_metric_series(data, "throughput_msg_per_sec", include_taskiq=False),
+        latency_metric_series(data, "throughput_msg_per_sec"),
         "Throughput from latency-instrumented runs",
         show_std=True,
     )
@@ -376,36 +495,17 @@ def plot_latency_tradeoff(
 
     for col, (metric, title) in enumerate(metrics):
         ax = fig.add_subplot(grid[1, col])
-        overflow_ax = fig.add_subplot(grid[2, col], sharex=ax)
-        metric_series = latency_metric_series(data, metric, include_taskiq=False)
-        overflow_series = latency_metric_series(data, metric, include_taskiq=None)
+        metric_series = latency_metric_series(data, metric)
 
         plot_series(ax, metric_series, title, show_std=True)
         apply_axis_style(ax, sleep_times, "Milliseconds")
         useful_values = [
             average(v[metric])
-            for framework, by_sleep in data.items()
-            if framework != "taskiq"
+            for by_sleep in data.values()
             for v in by_sleep.values()
         ]
         if useful_values:
             ax.set_ylim(0, max(useful_values) * 1.22)
-
-        if overflow_series:
-            plot_series(
-                overflow_ax,
-                overflow_series,
-                title.replace(" latency", " overflow"),
-                show_std=True,
-                annotate_end=True,
-                annotate_frameworks={"taskiq"},
-            )
-            apply_axis_style(overflow_ax, sleep_times, "Milliseconds")
-            overflow_ax.tick_params(axis="both", labelsize=8)
-            overflow_ax.title.set_fontsize(9)
-            overflow_ax.title.set_color("#64748B")
-        else:
-            overflow_ax.axis("off")
 
     handles = []
     labels = []
@@ -444,7 +544,7 @@ def plot_latency_tradeoff(
     fig.text(
         0.06,
         0.915,
-        "Throughput and latency from the same instrumented runs. Higher throughput is better; lower latency is better. Overflow panels show the full latency scale.",
+        "Throughput and latency from the same instrumented runs. Higher throughput is better; lower latency is better.",
         ha="left",
         va="top",
         fontsize=10.5,
@@ -635,6 +735,16 @@ def main() -> None:
             if category == "latency":
                 continue
             outputs.append(plot_throughput_category(category, throughput[category], args.output_dir))
+
+    tail = load_tail(args.benchmarks_csv)
+    if tail:
+        for category in sorted(tail, key=category_sort_key):
+            outputs.append(plot_tail_category(category, tail[category], args.output_dir))
+
+    recovery = load_category_metric(args.benchmarks_csv, "burst_recovery_seconds", {"burst"})
+    if recovery:
+        for category in sorted(recovery, key=category_sort_key):
+            outputs.append(plot_recovery_category(category, recovery[category], args.output_dir))
 
     if args.latency_csv.exists():
         latency, latency_attempted = load_latency(args.latency_csv)

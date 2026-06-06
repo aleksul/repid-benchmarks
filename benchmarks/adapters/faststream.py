@@ -13,7 +13,7 @@ from faststream import FastStream
 from faststream.rabbit import Channel, RabbitBroker, RabbitQueue
 from pydantic import BaseModel
 
-from benchmarks._publishing import publish_async, publish_async_bursts
+from benchmarks._publishing import publish_async, publish_async_at_rate, publish_async_bursts
 from benchmarks._runtime import BenchmarkConfig, load_config
 from benchmarks._work import cpu_work, record_latency_to_file
 
@@ -22,24 +22,26 @@ config = load_config()
 broker = RabbitBroker(config.amqp_url)
 app = FastStream(broker)
 _counter: Synchronized = Value(ctypes.c_long, 0)
+prefetch_count = config.prefetch_count or config.concurrency
 
 
 class TaskPayload(BaseModel):
-    enqueue_time: float
+    enqueue_time: float | None
 
 
 if config.is_latency:
 
-    @broker.subscriber(RabbitQueue(config.queue_name, durable=True), channel=Channel(prefetch_count=config.concurrency))
+    @broker.subscriber(RabbitQueue(config.queue_name, durable=True), channel=Channel(prefetch_count=prefetch_count))
     async def benchmark_task(body: TaskPayload) -> None:
         await asyncio.sleep(config.sleep_time)
-        record_latency_to_file(config.latency_path, time.perf_counter() - body.enqueue_time)
+        if body.enqueue_time is not None:
+            record_latency_to_file(config.latency_path, time.perf_counter() - body.enqueue_time)
         with _counter.get_lock():
             _counter.value += 1
 
 elif config.task_kind == "cpu":
 
-    @broker.subscriber(RabbitQueue(config.queue_name, durable=True), channel=Channel(prefetch_count=config.concurrency))
+    @broker.subscriber(RabbitQueue(config.queue_name, durable=True), channel=Channel(prefetch_count=prefetch_count))
     def benchmark_task() -> None:
         cpu_work(config.cpu_work_iterations)
         with _counter.get_lock():
@@ -47,7 +49,7 @@ elif config.task_kind == "cpu":
 
 else:
 
-    @broker.subscriber(RabbitQueue(config.queue_name, durable=True), channel=Channel(prefetch_count=config.concurrency))
+    @broker.subscriber(RabbitQueue(config.queue_name, durable=True), channel=Channel(prefetch_count=prefetch_count))
     async def benchmark_task() -> None:
         await asyncio.sleep(config.sleep_time)
         with _counter.get_lock():
@@ -57,6 +59,10 @@ else:
 async def _publish_one(pub_broker: RabbitBroker) -> None:
     payload: object = {"enqueue_time": time.perf_counter()} if config.is_latency else b""
     await pub_broker.publish(payload, queue=config.queue_name)
+
+
+async def _publish_one_latency(pub_broker: RabbitBroker, record: bool) -> None:
+    await pub_broker.publish({"enqueue_time": time.perf_counter() if record else None}, queue=config.queue_name)
 
 
 async def _publish_all(cfg: BenchmarkConfig) -> None:
@@ -73,6 +79,15 @@ async def _publish_bursts(cfg: BenchmarkConfig) -> None:
 
 def publish(cfg: BenchmarkConfig) -> None:
     uvloop.run(_publish_bursts(cfg) if cfg.mode == "burst" else _publish_all(cfg))
+
+
+def publish_latency(cfg: BenchmarkConfig, messages: int, rate_per_second: float, record: bool) -> None:
+    async def _run() -> None:
+        async with RabbitBroker(cfg.amqp_url) as pub_broker:
+            await pub_broker.declare_queue(RabbitQueue(cfg.queue_name, durable=True))
+            await publish_async_at_rate(messages, rate_per_second, lambda: _publish_one_latency(pub_broker, record))
+
+    uvloop.run(_run())
 
 
 async def _run(counter: Synchronized) -> None:

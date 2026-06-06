@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import subprocess
 import time
 from pathlib import Path
@@ -8,7 +9,7 @@ import celery as celery_lib
 from kombu import Exchange as KombuExchange, Queue as KombuQueue
 
 from benchmarks._processes import counter_incr_mmap, subprocess_kwargs
-from benchmarks._publishing import publish_threaded_bursts, publish_threaded_chunks
+from benchmarks._publishing import publish_sync_at_rate, publish_threaded_bursts, publish_threaded_chunks
 from benchmarks._runtime import BenchmarkConfig, load_config
 from benchmarks._work import cpu_work, record_latency_to_file
 
@@ -21,7 +22,7 @@ celery_app.conf.task_queues = (
 )
 celery_app.conf.worker_enable_remote_control = False
 celery_app.conf.event_queue_exclusive = True
-celery_app.conf.worker_prefetch_multiplier = 1
+celery_app.conf.worker_prefetch_multiplier = max(1, math.ceil((config.prefetch_count or config.concurrency) / config.concurrency))
 celery_app.conf.task_ignore_result = True
 celery_app.conf.result_backend = None
 celery_app.conf.worker_disable_rate_limits = True
@@ -48,6 +49,10 @@ def _send() -> None:
         _send_with_producer(producer)
 
 
+def _send_latency_with_producer(producer: object, record: bool) -> None:
+    benchmark_task.apply_async(args=[time.perf_counter() if record else None], producer=producer)
+
+
 def _publish_chunk(count: int, progress: object) -> None:
     sent = 0
     with celery_app.producer_pool.acquire(block=True) as producer:
@@ -66,6 +71,11 @@ def publish(cfg: BenchmarkConfig) -> None:
         publish_threaded_bursts(cfg.messages, cfg.burst_size, cfg.burst_interval, cfg.publish_workers, cfg.enqueue_batch_size, _send)
     else:
         publish_threaded_chunks(cfg.messages, cfg.publish_workers, cfg.enqueue_batch_size, _publish_chunk)
+
+
+def publish_latency(cfg: BenchmarkConfig, messages: int, rate_per_second: float, record: bool) -> None:
+    with celery_app.producer_pool.acquire(block=True) as producer:
+        publish_sync_at_rate(messages, rate_per_second, lambda: _send_latency_with_producer(producer, record))
 
 
 def start_workers(cfg: BenchmarkConfig, config_path: Path, counter: object | None = None) -> list[subprocess.Popen]:

@@ -86,6 +86,24 @@ def queue_consumer_count(amqp_url: str, mgmt_url: str, queue_name: str) -> int:
     return int(json.loads(raw).get("consumers", 0))
 
 
+def queue_metrics(amqp_url: str, mgmt_url: str, queue_name: str) -> dict[str, int]:
+    try:
+        raw = _request(amqp_url, mgmt_url, _queue_path(queue_name, amqp_url), "GET")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            return {"ready": 0, "unacknowledged": 0, "total": 0, "consumers": 0}
+        raise
+    data = json.loads(raw)
+    ready = int(data.get("messages_ready", 0))
+    unacknowledged = int(data.get("messages_unacknowledged", 0))
+    return {
+        "ready": ready,
+        "unacknowledged": unacknowledged,
+        "total": int(data.get("messages", ready + unacknowledged)),
+        "consumers": int(data.get("consumers", 0)),
+    }
+
+
 def wait_for_consumers(amqp_url: str, mgmt_url: str, queue_name: str, minimum: int, timeout: float = 30.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:

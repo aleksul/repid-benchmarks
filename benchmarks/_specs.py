@@ -14,8 +14,10 @@ LATENCY_SLEEP_TIMES = [0.01, 0.1, 0.5, 1.0]
 CPU_SLEEP_TIMES = [0.01, 0.1]
 DEFAULT_TARGET_DURATION = 15.0
 HIGH_CONCURRENCY_MESSAGE_CAP = 75_000
-STREAMING_MESSAGE_CAP = 150_000
 BURST_MESSAGE_CAP = 75_000
+LONG_TASK_DRAIN_MESSAGES = 160_000
+BURST_PREFETCH = 100
+STEADY_MESSAGES = {0.01: 1_000_000, 0.1: 750_000, 0.5: 400_000, 1.0: 300_000, 5.0: 200_000}
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +29,7 @@ class BenchmarkSpec:
     queue_base: str = "benchmark"
     processes: int = 8
     concurrency: int = 2000
+    prefetch_count: int | None = None
     publish_concurrency: int = 10000
     publish_workers: int = 8
     enqueue_batch_size: int = 1000
@@ -56,6 +59,13 @@ def _cap_messages(messages: dict[float, int], cap: int) -> dict[float, int]:
     return {sleep_time: min(count, cap) for sleep_time, count in messages.items()}
 
 
+def _long_task_drain_messages(messages: dict[float, int], cap: int) -> dict[float, int]:
+    capped = _cap_messages(messages, cap)
+    if 5.0 in messages:
+        capped[5.0] = LONG_TASK_DRAIN_MESSAGES
+    return capped
+
+
 def _queue(framework: str, mode: str) -> str:
     return f"{framework}_{mode}_bench" if mode not in ("base", "nogt", "hc", "cpu") else f"{framework}_benchmark"
 
@@ -72,13 +82,18 @@ def _spec(name: str, framework: Framework, mode: Mode, **kwargs: object) -> Benc
 
 def _framework_specs(framework: Framework, publish_workers: int, publish_concurrency: int) -> list[BenchmarkSpec]:
     base_messages = BASE_MESSAGES[framework]
+    cpu_kwargs: dict[str, object] = {}
+    if framework in {"celery", "dramatiq"}:
+        cpu_kwargs = {"concurrency": 1, "green_threads": False}
+    elif framework in {"faststream", "taskiq"}:
+        cpu_kwargs = {"concurrency": 1}
     return [
         _spec(framework, framework, "base", messages=base_messages, publish_workers=publish_workers, publish_concurrency=publish_concurrency),
         _spec(f"{framework}_hc", framework, "hc", concurrency=10000, messages=_cap_messages(base_messages, HIGH_CONCURRENCY_MESSAGE_CAP), publish_workers=publish_workers, publish_concurrency=publish_concurrency),
-        _spec(f"{framework}_cpu", framework, "cpu", task_kind="cpu", sleep_times=tuple(CPU_SLEEP_TIMES), messages=CPU_MESSAGES, publish_workers=publish_workers, publish_concurrency=publish_concurrency),
-        _spec(f"{framework}_streaming", framework, "streaming", messages=_cap_messages(base_messages, STREAMING_MESSAGE_CAP), publish_workers=publish_workers, publish_concurrency=publish_concurrency),
-        _spec(f"{framework}_burst", framework, "burst", messages=_cap_messages(base_messages, BURST_MESSAGE_CAP), publish_workers=publish_workers, publish_concurrency=publish_concurrency),
+        _spec(f"{framework}_cpu", framework, "cpu", task_kind="cpu", sleep_times=tuple(CPU_SLEEP_TIMES), messages=CPU_MESSAGES, publish_workers=publish_workers, publish_concurrency=publish_concurrency, **cpu_kwargs),
+        _spec(f"{framework}_burst", framework, "burst", concurrency=BURST_PREFETCH, prefetch_count=BURST_PREFETCH, messages=_long_task_drain_messages(base_messages, BURST_MESSAGE_CAP), publish_workers=publish_workers, publish_concurrency=publish_concurrency),
         _spec(f"{framework}_latency", framework, "latency", sleep_times=tuple(LATENCY_SLEEP_TIMES), messages=LATENCY_MESSAGES, publish_workers=publish_workers, publish_concurrency=publish_concurrency),
+        _spec(f"{framework}_steady", framework, "steady", messages=STEADY_MESSAGES, publish_workers=publish_workers, publish_concurrency=publish_concurrency),
     ]
 
 
@@ -111,6 +126,11 @@ SPECS["dramatiq_nogt"] = _spec(
 )
 
 ALL_BENCHMARKS = list(SPECS)
+DEFAULT_BENCHMARKS = [
+    name
+    for name, spec in SPECS.items()
+    if spec.mode in {"base", "hc", "cpu", "steady", "latency", "burst"}
+]
 
 
 def get_spec(name: str) -> BenchmarkSpec:

@@ -12,7 +12,7 @@ import uvloop
 from repid import AmqpServer, Repid, Router
 
 from benchmarks._processes import counter_incr_mmap
-from benchmarks._publishing import publish_async, publish_async_bursts
+from benchmarks._publishing import publish_async, publish_async_at_rate, publish_async_bursts
 from benchmarks._runtime import BenchmarkConfig, load_config
 from benchmarks._work import cpu_work, record_latency_to_file
 
@@ -37,9 +37,10 @@ def _increment_counter() -> None:
 if config.is_latency:
 
     @router.actor
-    async def benchmark_task(enqueue_time: float) -> None:
+    async def benchmark_task(enqueue_time: float | None) -> None:
         await asyncio.sleep(config.sleep_time)
-        record_latency_to_file(config.latency_path, time.perf_counter() - enqueue_time)
+        if enqueue_time is not None:
+            record_latency_to_file(config.latency_path, time.perf_counter() - enqueue_time)
         _increment_counter()
 
 elif config.task_kind == "cpu":
@@ -68,6 +69,11 @@ async def _publish_one() -> None:
     await app.send_message(channel=config.queue_name, payload=payload, headers={"topic": "benchmark_task"})
 
 
+async def _publish_one_latency(record: bool) -> None:
+    payload = json.dumps({"enqueue_time": time.perf_counter() if record else None}).encode()
+    await app.send_message(channel=config.queue_name, payload=payload, headers={"topic": "benchmark_task"})
+
+
 async def _publish_all(cfg: BenchmarkConfig) -> None:
     async with server.connection():
         await publish_async(cfg.messages, cfg.publish_concurrency, _publish_one)
@@ -82,12 +88,20 @@ def publish(cfg: BenchmarkConfig) -> None:
     uvloop.run(_publish_bursts(cfg) if cfg.mode == "burst" else _publish_all(cfg))
 
 
+def publish_latency(cfg: BenchmarkConfig, messages: int, rate_per_second: float, record: bool) -> None:
+    async def _run() -> None:
+        async with server.connection():
+            await publish_async_at_rate(messages, rate_per_second, lambda: _publish_one_latency(record))
+
+    uvloop.run(_run())
+
+
 async def _run(counter: Synchronized | None) -> None:
     global _counter
     if counter is not None:
         _counter = counter
     async with server.connection():
-        await app.run_worker(graceful_shutdown_time=0, tasks_limit=config.concurrency)
+        await app.run_worker(graceful_shutdown_time=0, tasks_limit=config.prefetch_count or config.concurrency)
 
 
 def _worker_process(counter: Synchronized | None) -> None:

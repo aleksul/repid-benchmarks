@@ -54,6 +54,42 @@ async def publish_async_bursts(
             await asyncio.sleep(burst_interval)
 
 
+async def publish_async_at_rate(
+    messages: int,
+    rate_per_second: float,
+    send: Callable[[], Awaitable[None]],
+) -> None:
+    if rate_per_second <= 0:
+        raise ValueError("arrival rate must be greater than 0")
+    start = time.perf_counter()
+    interval = 1.0 / rate_per_second
+    for i in range(1, messages + 1):
+        await send()
+        if i % 1000 == 0:
+            print(f"Enqueued: {i}/{messages}", end="\r", flush=True)
+        deadline = start + i * interval
+        delay = deadline - time.perf_counter()
+        if delay > 0:
+            await asyncio.sleep(delay)
+    print(f"Enqueued: {messages}/{messages}", end="\r", flush=True)
+
+
+def publish_sync_at_rate(messages: int, rate_per_second: float, send: Callable[[], None]) -> None:
+    if rate_per_second <= 0:
+        raise ValueError("arrival rate must be greater than 0")
+    start = time.perf_counter()
+    interval = 1.0 / rate_per_second
+    for i in range(1, messages + 1):
+        send()
+        if i % 1000 == 0:
+            print(f"Enqueued: {i}/{messages}", end="\r", flush=True)
+        deadline = start + i * interval
+        delay = deadline - time.perf_counter()
+        if delay > 0:
+            time.sleep(delay)
+    print(f"Enqueued: {messages}/{messages}", end="\r", flush=True)
+
+
 def publish_threaded(
     messages: int,
     workers: int,

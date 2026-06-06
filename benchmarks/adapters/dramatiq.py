@@ -8,7 +8,7 @@ import dramatiq
 from dramatiq.brokers.rabbitmq import RabbitmqBroker
 
 from benchmarks._processes import counter_incr_mmap, subprocess_kwargs
-from benchmarks._publishing import publish_threaded_bursts, publish_threaded_chunks
+from benchmarks._publishing import publish_sync_at_rate, publish_threaded_bursts, publish_threaded_chunks
 from benchmarks._runtime import BenchmarkConfig, load_config
 from benchmarks._work import cpu_work, record_latency_to_file
 
@@ -35,6 +35,10 @@ def _send() -> None:
     broker.enqueue(msg)
 
 
+def _send_latency(record: bool) -> None:
+    broker.enqueue(benchmark_task.message(time.perf_counter() if record else None))
+
+
 def _publish_chunk(count: int, progress: object) -> None:
     sent = 0
     for i in range(1, count + 1):
@@ -54,8 +58,15 @@ def publish(cfg: BenchmarkConfig) -> None:
         publish_threaded_chunks(cfg.messages, cfg.publish_workers, cfg.enqueue_batch_size, _publish_chunk)
 
 
+def publish_latency(cfg: BenchmarkConfig, messages: int, rate_per_second: float, record: bool) -> None:
+    publish_sync_at_rate(messages, rate_per_second, lambda: _send_latency(record))
+
+
 def start_workers(cfg: BenchmarkConfig, config_path: Path, counter: object | None = None) -> list[subprocess.Popen]:
     shutdown_args = ["--worker-shutdown-timeout", str(WORKER_SHUTDOWN_TIMEOUT_MS)]
+    kwargs = subprocess_kwargs(config_path, cfg.worker_log_dir, f"{cfg.name}-dramatiq")
+    if cfg.prefetch_count is not None:
+        kwargs["env"]["dramatiq_queue_prefetch"] = str(cfg.prefetch_count)  # type: ignore[index]
     if cfg.green_threads:
         args = [
             "dramatiq-gevent",
@@ -76,4 +87,4 @@ def start_workers(cfg: BenchmarkConfig, config_path: Path, counter: object | Non
             "1",
             *shutdown_args,
         ]
-    return [subprocess.Popen(args, **subprocess_kwargs(config_path, cfg.worker_log_dir, f"{cfg.name}-dramatiq"))]
+    return [subprocess.Popen(args, **kwargs)]

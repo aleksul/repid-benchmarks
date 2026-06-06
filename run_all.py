@@ -27,7 +27,7 @@ import platform
 
 from benchmarks._rabbitmq import management_url_from_amqp
 from benchmarks._runtime import BenchmarkConfig, write_config
-from benchmarks._specs import ALL_BENCHMARKS, DEFAULT_TARGET_DURATION, SPECS, get_spec
+from benchmarks._specs import ALL_BENCHMARKS, DEFAULT_BENCHMARKS, DEFAULT_TARGET_DURATION, SPECS, get_spec
 from benchmarks._work import calibrate_cpu_work_iterations
 
 ROOT = Path(__file__).parent
@@ -36,8 +36,38 @@ DEFAULT_TIME_LIMIT = 300.0
 DEFAULT_BURST_SIZE = 5000
 DEFAULT_BURST_INTERVAL = 1.0
 
-THROUGHPUT_CSV_HEADER = ["framework", "sleep_time", "run", "status", "throughput_msg_per_sec", "tasks_done", "total_messages", "duration_seconds"]
-LATENCY_CSV_HEADER = ["framework", "sleep_time", "run", "status", "throughput_msg_per_sec", "p50_ms", "p95_ms", "p99_ms", "latency_samples", "duration_seconds"]
+THROUGHPUT_CSV_HEADER = [
+    "framework",
+    "sleep_time",
+    "run",
+    "status",
+    "throughput_msg_per_sec",
+    "tasks_done",
+    "total_messages",
+    "duration_seconds",
+    "tail_95_to_100_seconds",
+    "tail_98_to_100_seconds",
+    "tail_99_to_100_seconds",
+    "tail_995_to_100_seconds",
+    "burst_publish_seconds",
+    "burst_recovery_seconds",
+]
+LATENCY_CSV_HEADER = [
+    "framework",
+    "sleep_time",
+    "run",
+    "status",
+    "throughput_msg_per_sec",
+    "p50_ms",
+    "p95_ms",
+    "p99_ms",
+    "latency_samples",
+    "duration_seconds",
+    "offered_rate_msg_per_sec",
+    "achieved_rate_msg_per_sec",
+    "backlog_at_measurement_end",
+    "drain_seconds",
+]
 
 
 def _is_latency(name: str) -> bool:
@@ -55,10 +85,17 @@ def config_hash(config: BenchmarkConfig) -> str:
         "task_kind": config.task_kind,
         "processes": config.processes,
         "concurrency": config.concurrency,
+        "prefetch_count": config.prefetch_count,
         "publish_concurrency": config.publish_concurrency,
         "publish_workers": config.publish_workers,
         "publish_processes": config.publish_processes,
         "green_threads": config.green_threads,
+        "steady_warmup_seconds": config.steady_warmup_seconds,
+        "steady_measurement_seconds": config.steady_measurement_seconds,
+        "latency_arrival_rate": config.latency_arrival_rate,
+        "latency_warmup_seconds": config.latency_warmup_seconds,
+        "latency_measurement_seconds": config.latency_measurement_seconds,
+        "burst_multiplier": config.burst_multiplier,
     }, sort_keys=True)
     return hashlib.sha256(raw.encode()).hexdigest()[:12]
 
@@ -94,6 +131,23 @@ def parse_runner_output(stdout: str) -> dict[str, float | int | str] | None:
     m_ls = re.search(r"^LATENCY_SAMPLES:\s*(\d+)", stdout, re.MULTILINE)
     if m_ls:
         result["latency_samples"] = int(m_ls.group(1))
+    for tag, key in (
+        ("TAIL_95_TO_100_SECONDS", "tail_95_to_100_seconds"),
+        ("TAIL_98_TO_100_SECONDS", "tail_98_to_100_seconds"),
+        ("TAIL_99_TO_100_SECONDS", "tail_99_to_100_seconds"),
+        ("TAIL_995_TO_100_SECONDS", "tail_995_to_100_seconds"),
+        ("LATENCY_OFFERED_RATE", "latency_offered_rate"),
+        ("LATENCY_ACHIEVED_RATE", "latency_achieved_rate"),
+        ("LATENCY_DRAIN_SECONDS", "latency_drain_seconds"),
+        ("BURST_PUBLISH_SECONDS", "burst_publish_seconds"),
+        ("BURST_RECOVERY_SECONDS", "burst_recovery_seconds"),
+    ):
+        m_tail = re.search(rf"^{tag}:\s*([\d.]+)", stdout, re.MULTILINE)
+        if m_tail:
+            result[key] = float(m_tail.group(1))
+    m_backlog = re.search(r"^LATENCY_BACKLOG_AT_MEASUREMENT_END:\s*(\d+)", stdout, re.MULTILINE)
+    if m_backlog:
+        result["latency_backlog_at_measurement_end"] = int(m_backlog.group(1))
     return result
 
 
@@ -235,6 +289,7 @@ def calibrate_message_counts(
                 rabbitmq_mgmt_url=mgmt_url,
                 processes=spec.processes,
                 concurrency=spec.concurrency,
+                prefetch_count=spec.prefetch_count,
                 publish_concurrency=spec.publish_concurrency,
                 publish_workers=spec.publish_workers,
                 publish_processes=publish_processes or spec.processes,
@@ -314,7 +369,7 @@ def suggest_message_counts(frameworks: list[str], sleep_times: list[float], resu
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run benchmark specs and compare throughput.")
-    parser.add_argument("--frameworks", nargs="+", default=ALL_BENCHMARKS, choices=ALL_BENCHMARKS, metavar="FW")
+    parser.add_argument("--frameworks", nargs="+", default=DEFAULT_BENCHMARKS, choices=ALL_BENCHMARKS, metavar="FW")
     parser.add_argument("--sleep-times", nargs="+", type=float, default=None, metavar="S")
     parser.add_argument("--runs", type=int, default=DEFAULT_RUNS, metavar="N")
     parser.add_argument("--warmup-runs", type=int, default=0, metavar="N")
@@ -333,6 +388,12 @@ def main() -> None:
     )
     parser.add_argument("--burst-size", type=int, default=DEFAULT_BURST_SIZE)
     parser.add_argument("--burst-interval", type=float, default=DEFAULT_BURST_INTERVAL)
+    parser.add_argument("--steady-warmup-seconds", type=float, default=10.0)
+    parser.add_argument("--steady-measurement-seconds", type=float, default=30.0)
+    parser.add_argument("--latency-arrival-rate", type=float, default=1000.0)
+    parser.add_argument("--latency-warmup-seconds", type=float, default=10.0)
+    parser.add_argument("--latency-measurement-seconds", type=float, default=30.0)
+    parser.add_argument("--burst-multiplier", type=float, default=2.0)
     parser.add_argument("--randomize-order", action="store_true", default=True, help="Randomize run order (default: True)")
     parser.add_argument("--no-randomize", action="store_true", help="Disable run order randomization")
     parser.add_argument("--keep-queues", action="store_true")
@@ -345,6 +406,10 @@ def main() -> None:
     args = parser.parse_args()
     if args.publish_processes is not None and args.publish_processes < 1:
         parser.error("--publish-processes must be at least 1")
+    if args.latency_arrival_rate <= 0:
+        parser.error("--latency-arrival-rate must be greater than 0")
+    if args.burst_multiplier <= 0:
+        parser.error("--burst-multiplier must be greater than 0")
 
     randomize = not args.no_randomize
     frameworks: list[str] = args.frameworks
@@ -487,6 +552,7 @@ def main() -> None:
                 rabbitmq_mgmt_url=mgmt_url,
                 processes=spec.processes,
                 concurrency=spec.concurrency,
+                prefetch_count=spec.prefetch_count,
                 publish_concurrency=spec.publish_concurrency,
                 publish_workers=spec.publish_workers,
                 publish_processes=args.publish_processes or spec.processes,
@@ -497,6 +563,12 @@ def main() -> None:
                 cpu_work_iterations=cpu_iterations_by_sleep.get(st),
                 keep_queue=args.keep_queues,
                 worker_log_dir=args.worker_log_dir,
+                steady_warmup_seconds=args.steady_warmup_seconds,
+                steady_measurement_seconds=args.steady_measurement_seconds,
+                latency_arrival_rate=args.latency_arrival_rate,
+                latency_warmup_seconds=args.latency_warmup_seconds,
+                latency_measurement_seconds=args.latency_measurement_seconds,
+                burst_multiplier=args.burst_multiplier,
             )
             label = f"[{idx}/{len(tasks)}] {fw:<18} sleep={st:<5} run={run_idx}/{args.runs}"
             if warmup:
@@ -513,7 +585,16 @@ def main() -> None:
             else:
                 suffix = f"  -> [{status}]"
             labels = []
-            for key, unit in (("p50_ms", "ms"), ("p95_ms", "ms"), ("p99_ms", "ms"), ("duration_seconds", "s")):
+            for key, unit in (
+                ("p50_ms", "ms"),
+                ("p95_ms", "ms"),
+                ("p99_ms", "ms"),
+                ("duration_seconds", "s"),
+                ("tail_99_to_100_seconds", "s tail99"),
+                ("latency_offered_rate", " msg/s offered"),
+                ("latency_drain_seconds", "s lat-drain"),
+                ("burst_recovery_seconds", "s recovery"),
+            ):
                 if key in result and result[key] is not None:
                     labels.append(f"{key}={result[key]:.1f}{unit}")
             if labels:
@@ -535,6 +616,7 @@ def main() -> None:
                 "amqp_host": cfg.amqp_url.split("@")[-1].split("/")[0],
                 "processes": cfg.processes,
                 "concurrency": cfg.concurrency,
+                "prefetch_count": cfg.prefetch_count,
                 "publish_concurrency": cfg.publish_concurrency,
                 "publish_workers": cfg.publish_workers,
                 "publish_processes": cfg.publish_processes,
@@ -542,12 +624,37 @@ def main() -> None:
                 "python": platform.python_version(),
                 "timestamp": time.time(),
                 "config_hash": config_hash(cfg),
+                "tail_95_to_100_seconds": result.get("tail_95_to_100_seconds"),
+                "tail_98_to_100_seconds": result.get("tail_98_to_100_seconds"),
+                "tail_99_to_100_seconds": result.get("tail_99_to_100_seconds"),
+                "tail_995_to_100_seconds": result.get("tail_995_to_100_seconds"),
+                "latency_offered_rate": result.get("latency_offered_rate"),
+                "latency_achieved_rate": result.get("latency_achieved_rate"),
+                "latency_backlog_at_measurement_end": result.get("latency_backlog_at_measurement_end"),
+                "latency_drain_seconds": result.get("latency_drain_seconds"),
+                "burst_publish_seconds": result.get("burst_publish_seconds"),
+                "burst_recovery_seconds": result.get("burst_recovery_seconds"),
             }) + "\n")
             metadata_file.flush()
             tasks_done = result.get("tasks_done", "")
             total_messages = result.get("total_messages", messages)
             duration_seconds = result.get("duration_seconds", "")
-            throughput_writer.writerow([fw, st, run_idx, status, f"{throughput:.2f}" if throughput is not None else "", tasks_done, total_messages, f"{duration_seconds:.4f}" if isinstance(duration_seconds, (int, float)) else ""])
+            throughput_writer.writerow([
+                fw,
+                st,
+                run_idx,
+                status,
+                f"{throughput:.2f}" if throughput is not None else "",
+                tasks_done,
+                total_messages,
+                f"{duration_seconds:.4f}" if isinstance(duration_seconds, (int, float)) else "",
+                f"{result['tail_95_to_100_seconds']:.4f}" if isinstance(result.get("tail_95_to_100_seconds"), (int, float)) else "",
+                f"{result['tail_98_to_100_seconds']:.4f}" if isinstance(result.get("tail_98_to_100_seconds"), (int, float)) else "",
+                f"{result['tail_99_to_100_seconds']:.4f}" if isinstance(result.get("tail_99_to_100_seconds"), (int, float)) else "",
+                f"{result['tail_995_to_100_seconds']:.4f}" if isinstance(result.get("tail_995_to_100_seconds"), (int, float)) else "",
+                f"{result['burst_publish_seconds']:.4f}" if isinstance(result.get("burst_publish_seconds"), (int, float)) else "",
+                f"{result['burst_recovery_seconds']:.4f}" if isinstance(result.get("burst_recovery_seconds"), (int, float)) else "",
+            ])
             throughput_file.flush()
             if _is_latency(fw) and fw in latency_results and status == "ok":
                 for metric in ("throughput", "p50_ms", "p95_ms", "p99_ms"):
@@ -568,13 +675,17 @@ def main() -> None:
                     f"{p99:.3f}" if p99 else "0",
                     lat_samples if lat_samples else "0",
                     f"{lat_duration:.4f}" if isinstance(lat_duration, (int, float)) else "",
+                    f"{result['latency_offered_rate']:.4f}" if isinstance(result.get("latency_offered_rate"), (int, float)) else "",
+                    f"{result['latency_achieved_rate']:.4f}" if isinstance(result.get("latency_achieved_rate"), (int, float)) else "",
+                    result.get("latency_backlog_at_measurement_end", ""),
+                    f"{result['latency_drain_seconds']:.4f}" if isinstance(result.get("latency_drain_seconds"), (int, float)) else "",
                 ])
                 latency_file.flush()
             elif _is_latency(fw) and status != "ok":
                 latency_writer.writerow([
                     fw, st, run_idx, status,
                     f"{throughput:.2f}" if throughput is not None else "",
-                    "", "", "", "", "",
+                    "", "", "", "", "", "", "", "", "",
                 ])
                 latency_file.flush()
     finally:
