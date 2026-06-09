@@ -43,16 +43,30 @@ CATEGORY_NOTES = {
     "steady": "Fixed-window measurement after warmup; final drain is intentionally ignored.",
 }
 
-FRAMEWORK_ORDER = ["repid", "faststream", "dramatiq", "taskiq", "celery"]
+FRAMEWORK_ORDER = [
+    "repid",
+    "faststream",
+    "dramatiq",
+    "dramatiq_nogt",
+    "taskiq",
+    "celery",
+    "celery_nogt",
+]
 FRAMEWORK_DISPLAY = {
     "repid": "repid",
     "faststream": "faststream",
     "dramatiq": "dramatiq",
     "taskiq": "taskiq",
     "celery": "celery",
-    "celery_nogt": "celery w/o green threads",
-    "dramatiq_nogt": "dramatiq w/o green threads",
+    "celery_nogt": "celery no-GT",
+    "dramatiq_nogt": "dramatiq no-GT",
 }
+
+CONCURRENCY = 2000
+WORKERS = 8
+BASE_THROUGHPUT_Y_MAX = 60_000
+THEORETICAL_COLOR = "#94A3B8"
+THEORETICAL_KEY = "__theoretical_max__"
 
 FRAMEWORK_STYLES = {
     "repid": {"color": "#2563EB", "marker": "o", "lw": 2.8, "zorder": 8},
@@ -218,6 +232,10 @@ def fmt_sleep(value: float) -> str:
     return f"{value:g}s"
 
 
+def theoretical_max(sleep_time: float) -> float:
+    return CONCURRENCY * WORKERS * (1.0 / sleep_time)
+
+
 def framework_sort_key(framework: str) -> tuple[int, str]:
     try:
         return FRAMEWORK_ORDER.index(framework), framework
@@ -331,14 +349,238 @@ def plot_series(
             )
 
 
+def add_point_labels(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    data: Series,
+    sleep_times: list[float],
+    *,
+    include_theoretical: bool = False,
+    label_series_end: bool = True,
+) -> None:
+    ymin, ymax = ax.get_ylim()
+    y_range = ymax - ymin
+    if y_range <= 0:
+        return
+
+    ax_h_pts = ax.get_position().height * fig.get_figheight() * 72
+
+    def to_disp(y: float) -> float:
+        return (y - ymin) / y_range * ax_h_pts
+
+    def deconflict(
+        items: list[tuple[str, float]],
+        *,
+        base_pts: float = 13,
+        gap_pts: float = 11,
+        centered: bool = False,
+    ) -> dict[str, float]:
+        ordered = sorted(items, key=lambda item: item[1])
+        pos = [to_disp(raw_y) + (0 if centered else base_pts) for _, raw_y in ordered]
+        for i in range(1, len(pos)):
+            if pos[i] - pos[i - 1] < gap_pts:
+                pos[i] = pos[i - 1] + gap_pts
+        return {key: p - to_disp(raw_y) for (key, raw_y), p in zip(ordered, pos)}
+
+    for sleep_time in sleep_times:
+        items = [
+            (framework, average(data[framework][sleep_time]))
+            for framework in sorted(data, key=framework_sort_key)
+            if sleep_time in data[framework]
+            and (label_series_end or sleep_time != max(data[framework]))
+        ]
+        tv = theoretical_max(sleep_time)
+        if include_theoretical and ymin <= tv <= ymax:
+            items.append((THEORETICAL_KEY, tv))
+        if not items:
+            continue
+
+        is_last = sleep_time == max(sleep_times)
+        offsets = deconflict(items, centered=is_last)
+        for key, raw_y in items:
+            color = (
+                THEORETICAL_COLOR
+                if key == THEORETICAL_KEY
+                else FRAMEWORK_STYLES.get(key, {}).get("color", "#888")
+            )
+            ax.annotate(
+                fmt_compact(raw_y),
+                xy=(sleep_time, raw_y),
+                xytext=(4, offsets[key]),
+                textcoords="offset points",
+                ha="left",
+                va="center" if is_last else "bottom",
+                fontsize=7.5,
+                color=color,
+                alpha=0.85,
+                fontweight="bold" if key == "repid" else "normal",
+                annotation_clip=True,
+            )
+
+
+def add_base_summary_legend(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    data: Series,
+    sleep_times: list[float],
+) -> None:
+    ymin, ymax = ax.get_ylim()
+    y_range = ymax - ymin
+    if y_range <= 0 or not sleep_times:
+        return
+
+    last_x = max(sleep_times)
+    min_sleep = min(sleep_times)
+    ax_h_pts = ax.get_position().height * fig.get_figheight() * 72
+
+    def terminus(framework: str) -> tuple[float, float]:
+        xs = sorted(data[framework])
+        x = xs[-1]
+        return x, average(data[framework][x])
+
+    def peak_y(framework: str) -> float:
+        if min_sleep in data[framework]:
+            return average(data[framework][min_sleep])
+        return terminus(framework)[1]
+
+    final_items = [
+        (framework, *terminus(framework), peak_y(framework))
+        for framework in sorted(data, key=framework_sort_key)
+    ]
+    final_items.append(
+        (THEORETICAL_KEY, last_x, theoretical_max(last_x), theoretical_max(min_sleep))
+    )
+
+    label_gap_pts = 16
+    ordered = sorted(final_items, key=lambda item: item[3])
+    total_pts = label_gap_pts * (len(ordered) - 1)
+    start_pts = ax_h_pts / 2 - total_pts / 2
+    label_y = {
+        framework: ymin + (start_pts + i * label_gap_pts) / ax_h_pts * y_range
+        for i, (framework, _, _, _) in enumerate(ordered)
+    }
+    gap_data = 11 / ax_h_pts * y_range
+    conn_x = last_x * 1.025
+    celery_peak = peak_y("celery") if "celery" in data else None
+
+    fig.canvas.draw()
+    for framework, term_x, term_y, peak in final_items:
+        is_theoretical = framework == THEORETICAL_KEY
+        color = (
+            THEORETICAL_COLOR
+            if is_theoretical
+            else FRAMEWORK_STYLES.get(framework, {}).get("color", "#888")
+        )
+        disp_y = label_y[framework]
+
+        if term_x < last_x:
+            ax.plot(
+                [term_x, conn_x],
+                [term_y, term_y],
+                color=color,
+                lw=0.8,
+                alpha=0.4,
+                linestyle=":",
+                clip_on=False,
+            )
+        if abs(disp_y - term_y) > gap_data * 0.1:
+            ax.plot(
+                [conn_x, conn_x],
+                [term_y, disp_y],
+                color=color,
+                lw=0.8,
+                alpha=0.55,
+                clip_on=False,
+            )
+
+        display = FRAMEWORK_DISPLAY.get(framework, framework)
+        if is_theoretical:
+            label = f"  theoretical max   {fmt_compact(peak)}/s"
+        elif framework == "celery":
+            label = f"  {display}   {fmt_compact(peak)}/s  -  baseline"
+        elif celery_peak:
+            ratio = peak / celery_peak
+            ratio_str = f"{ratio:.1f}" if ratio < 10 else f"{ratio:.0f}"
+            label = f"  {display}   {fmt_compact(peak)}/s  -  {ratio_str}x vs celery"
+        else:
+            label = f"  {display}   {fmt_compact(peak)}/s"
+
+        ax.annotate(
+            label,
+            xy=(last_x, disp_y),
+            xytext=(58, 0),
+            textcoords="offset points",
+            fontsize=9.5,
+            fontweight="bold" if framework == "repid" else "normal",
+            color=color,
+            va="center",
+            annotation_clip=False,
+        )
+
+        style = FRAMEWORK_STYLES.get(framework, {})
+        anchor_display = ax.transData.transform((last_x, disp_y))
+        x0 = anchor_display[0] + 22
+        x1 = x0 + 30
+        y0 = y1 = anchor_display[1]
+        p0 = ax.transData.inverted().transform((x0, y0))
+        p1 = ax.transData.inverted().transform((x1, y1))
+        ax.plot(
+            [p0[0], p1[0]],
+            [p0[1], p1[1]],
+            color=color,
+            linewidth=1.5 if is_theoretical else style.get("lw", 2.1),
+            linestyle=(0, (6, 4)) if is_theoretical else style.get("ls", "-"),
+            marker=None if is_theoretical else style.get("marker", "o"),
+            markersize=5,
+            markeredgewidth=1.2,
+            markeredgecolor="white",
+            clip_on=False,
+            zorder=10,
+        )
+
+
+def add_base_throughput_annotations(
+    fig: plt.Figure,
+    ax: plt.Axes,
+    data: Series,
+    sleep_times: list[float],
+) -> None:
+    if not sleep_times:
+        return
+
+    theoretical_values = [theoretical_max(sleep_time) for sleep_time in sleep_times]
+    _, ymax = ax.get_ylim()
+    ax.set_ylim(0, max(ymax, min(BASE_THROUGHPUT_Y_MAX, max(theoretical_values))))
+    ax.plot(
+        sleep_times,
+        theoretical_values,
+        color=THEORETICAL_COLOR,
+        linewidth=1.5,
+        linestyle=(0, (6, 4)),
+        zorder=0,
+    )
+    add_point_labels(fig, ax, data, sleep_times, include_theoretical=True)
+    add_base_summary_legend(fig, ax, data, sleep_times)
+
+
 def plot_throughput_category(category: str, data: Series, output_dir: Path) -> Path:
     sleep_times = sorted({sleep_time for points in data.values() for sleep_time in points})
-    fig, ax = plt.subplots(figsize=(11.5, 7.0))
-    fig.subplots_adjust(left=0.09, right=0.78, top=0.82, bottom=0.13)
+    is_base = category == "base"
+    fig, ax = plt.subplots(figsize=(13.0, 8.0) if is_base else (11.5, 7.0))
+    fig.subplots_adjust(
+        left=0.09,
+        right=0.72 if is_base else 0.78,
+        top=0.82,
+        bottom=0.13,
+    )
 
     title = f"{CATEGORY_DISPLAY.get(category, category.title())} Throughput"
-    plot_series(ax, data, None, show_std=True)
+    plot_series(ax, data, None, show_std=True, annotate_end=not is_base)
     apply_axis_style(ax, sleep_times, "Messages / second")
+    if is_base:
+        add_base_throughput_annotations(fig, ax, data, sleep_times)
+    else:
+        add_point_labels(fig, ax, data, sleep_times, label_series_end=False)
 
     fig.text(
         0.09,
@@ -360,15 +602,16 @@ def plot_throughput_category(category: str, data: Series, output_dir: Path) -> P
         color="#64748B",
     )
 
-    handles, labels = ax.get_legend_handles_labels()
-    ax.legend(
-        handles,
-        labels,
-        loc="center left",
-        bbox_to_anchor=(1.02, 0.5),
-        frameon=False,
-        fontsize=9.5,
-    )
+    if not is_base:
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(
+            handles,
+            labels,
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
+            frameon=False,
+            fontsize=9.5,
+        )
 
     output = output_dir / f"throughput_{category}.svg"
     fig.savefig(output, format="svg")
@@ -383,6 +626,7 @@ def plot_tail_category(category: str, data: Series, output_dir: Path) -> Path:
 
     plot_series(ax, data, None, show_std=True)
     apply_axis_style(ax, sleep_times, "Seconds from 99% to 100%")
+    add_point_labels(fig, ax, data, sleep_times, label_series_end=False)
 
     fig.text(
         0.09,
@@ -427,6 +671,7 @@ def plot_recovery_category(category: str, data: Series, output_dir: Path) -> Pat
 
     plot_series(ax, data, None, show_std=True)
     apply_axis_style(ax, sleep_times, "Recovery seconds")
+    add_point_labels(fig, ax, data, sleep_times, label_series_end=False)
 
     fig.text(
         0.09,
@@ -492,6 +737,13 @@ def plot_latency_tradeoff(
         show_std=True,
     )
     apply_axis_style(throughput_ax, sleep_times, "Messages / second")
+    add_point_labels(
+        fig,
+        throughput_ax,
+        latency_metric_series(data, "throughput_msg_per_sec"),
+        sleep_times,
+        label_series_end=False,
+    )
 
     for col, (metric, title) in enumerate(metrics):
         ax = fig.add_subplot(grid[1, col])
@@ -506,6 +758,7 @@ def plot_latency_tradeoff(
         ]
         if useful_values:
             ax.set_ylim(0, max(useful_values) * 1.22)
+        add_point_labels(fig, ax, metric_series, sleep_times, label_series_end=False)
 
     handles = []
     labels = []
@@ -754,7 +1007,11 @@ def main() -> None:
 
     print("Generated charts:")
     for output in outputs:
-        print(f"  {output.relative_to(ROOT)}")
+        try:
+            display_path = output.relative_to(ROOT)
+        except ValueError:
+            display_path = output
+        print(f"  {display_path}")
 
 
 if __name__ == "__main__":

@@ -131,7 +131,7 @@ ALL_BENCHMARKS = list(SPECS)
 DEFAULT_BENCHMARKS = [
     name
     for name, spec in SPECS.items()
-    if spec.mode in {"base", "hc", "cpu", "steady", "latency", "burst"}
+    if spec.mode in {"base", "nogt", "hc", "cpu", "steady", "latency", "burst"}
 ]
 
 
