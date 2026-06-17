@@ -5,14 +5,14 @@ description = ""
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "celery>=5.6.2",
+    "celery>=5.6.3",
     "dramatiq[rabbitmq]>=2.1.0",
     "faststream[rabbit]>=0.6.7",
     "gevent>=25.9.1",
     "redis>=7.3.0",
-    "repid[amqp]==2.0.0a18",
+    "repid[amqp]>=2.1.2",
     "taskiq-aio-pika>=0.6.0",
-    "taskiq>=0.12.1",
+    "taskiq>=0.12.4",
     "uvloop>=0.22.1",
     "matplotlib>=3.10.8",
 ]

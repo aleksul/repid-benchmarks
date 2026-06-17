@@ -17,31 +17,36 @@ All frameworks run against **RabbitMQ** as the message broker:
 | Framework | Concurrency model | Notes |
 |---|---|---|
 | repid | async (uvloop, in-process) | |
-| celery | sync processes | with gevent |
-| celery_nogt | sync processes | without gevent |
+| celery | sync processes | with gevent, prefetch=1, no result backend |
+| celery_nogt | sync processes | without gevent, 1 thread per worker |
 | dramatiq | sync processes | with gevent |
-| dramatiq_nogt | sync processes | without gevent |
+| dramatiq_nogt | sync processes | without gevent, 1 thread per worker |
 | faststream | async (uvloop, in-process) | |
-| taskiq | async (subprocess CLI) | |
+| taskiq | async (subprocess CLI) | publisher uses uvloop |
 
 ## Running all benchmarks
 
-Use the orchestrator to run every framework across a range of sleep times and
-collect throughput statistics (mean ± std over 5 runs):
+Use the orchestrator to run the default headline suite across a range of sleep
+times and collect statistics (mean ± std over 5 runs). The default suite keeps
+the base and high-concurrency drain tests, plus CPU-bound and steady-state I/O
+throughput runs, controlled-arrival latency, and burst recovery. Run order is
+randomized by default to reduce order bias:
 
 ```bash
 python run_all.py
 ```
 
 Results are printed as an ASCII table and saved to `benchmarks_results.csv`.
+Timed-out and errored runs are recorded with their status but excluded from
+averages.
 
 ### Options
 
 ```
 python run_all.py --help
 
---frameworks          repid celery celery_nogt dramatiq dramatiq_nogt faststream taskiq
-                      # subset of frameworks to run (default: all)
+--frameworks          repid celery celery_nogt dramatiq dramatiq_nogt faststream taskiq ...
+                      # subset of benchmark specs to run (default: base/hc/cpu/steady/latency/burst suite)
 --sleep-times         0.01 0.1 0.5 1.0 5.0
                       # task sleep durations in seconds (default: as shown)
 --runs                5
@@ -50,46 +55,138 @@ python run_all.py --help
                       # override message count for all frameworks/sleep-times
 --messages-per-framework  FW:N [FW:N ...]
                       # override message count for a specific framework, e.g. celery_nogt:5000
+--cpu-work-iterations N
+                      # fixed hash iterations per CPU task; if omitted, run_all calibrates one
+                      # shared value per CPU sleep time and passes it to all CPU frameworks
 --amqp-url            amqp://user:testtest@localhost:5672
                       # AMQP broker URL passed to every benchmark
 --rabbitmq-mgmt-url   http://localhost:15672
                       # RabbitMQ management HTTP URL (derived from --amqp-url by default)
---resume              # skip already-completed (framework, sleep_time, run) triples
+--warmup-runs         N
+                      # warmup repetitions that are not written to CSV
+--no-randomize        # disable run order randomization (randomized by default)
+--seed                N
+                      # random seed for run order
+--time-limit          300
+                      # max seconds to wait for processing
+--publish-processes   N
+                      # publisher subprocesses per run (default: worker process count)
+--steady-warmup-seconds 10.0
+                      # warmup duration for *_steady fixed-window runs
+--steady-measurement-seconds 30.0
+                      # measurement duration for *_steady fixed-window runs
+--latency-arrival-rate 1000.0
+                      # offered publish rate for controlled *_latency runs
+--latency-warmup-seconds 10.0
+                      # unmeasured warmup duration for *_latency runs
+--latency-measurement-seconds 30.0
+                      # measured publish duration for *_latency runs
+--burst-multiplier    2.0
+                      # burst size as process * concurrency * multiplier
+--resume              # skip already-completed ok runs
                       # by loading the existing benchmarks_results.csv
+--calibrate           # run calibration to determine message counts per framework/sleep-time
+--target-duration     15.0
+                      # target worker run duration in seconds for calibration
+--counts-file         FILE
+                      # load/save calibrated message counts from/to a JSON file
+--keep-queues         # keep RabbitMQ queues after each run instead of deleting them
+--worker-log-dir      DIR
+                      # directory for worker subprocess logs
+```
+
+### Calibration
+
+By default, message counts come from hard-coded fallback values. For more
+statistically stable results, use calibration to determine counts that target
+a specific worker run duration (15 seconds by default):
+
+```bash
+python run_all.py --calibrate --target-duration 15
+```
+
+This runs a short benchmark for each (framework, sleep_time) pair, measures
+throughput, and computes the message count needed to run for approximately
+`--target-duration` seconds. Calibrated counts can be saved and reused:
+
+```bash
+python run_all.py --calibrate --counts-file counts.json
+python run_all.py --counts-file counts.json
 ```
 
 ## Plotting results
 
-After running benchmarks, generate a chart from `benchmarks_results.csv`:
+After running benchmarks, generate category-aware charts from
+`benchmarks_results.csv` and `latency_results.csv`:
 
 ```bash
-python plot_benchmarks.py
+uv run python plot_benchmarks.py
 ```
 
-The chart is saved as `benchmarks_chart.svg`.
+Charts are saved to `benchmark_charts/`:
 
-## Running a single benchmark
+| Chart | Description |
+|---|---|
+| `throughput_hc.svg` | High-concurrency throughput |
+| `throughput_cpu.svg` | CPU-bound throughput |
+| `throughput_burst.svg` | Secondary end-to-end rate for burst recovery runs |
+| `throughput_steady.svg` | Fixed-window steady-state throughput after warmup |
+| `tail_99_to_100_<category>.svg` | Time spent draining the final 1% for categories with tail data |
+| `recovery_burst.svg` | Time from burst publish completion to full recovery |
+| `latency_tradeoff.svg` | Throughput plus p50, p95, and p99 latency from latency-instrumented runs |
+| `latency_tradeoff_scatter.svg` | p95 latency vs throughput tradeoff; upper-left is best |
 
-Each file lives in `benchmarks/` and can be run standalone. The following
-environment variables are supported:
+## Running Specific Benchmarks
 
-| Variable | Default | Description |
-|---|---|---|
-| `SLEEP_TIME` | `1.0` | Task sleep duration (seconds) |
-| `MESSAGES_AMOUNT` | `80000` | Number of messages to enqueue |
-| `TIME_LIMIT` | `300` | Max seconds to wait for processing |
-| `AMQP_URL` | `amqp://user:testtest@localhost:5672` | AMQP broker URL |
-| `RABBITMQ_MGMT_URL` | derived from `AMQP_URL` | RabbitMQ management HTTP URL |
+Direct per-variant benchmark files are intentionally not supported. Run one or
+more specs through `run_all.py` instead:
 
 ```bash
-SLEEP_TIME=0.1 MESSAGES_AMOUNT=1000 python benchmarks/bench_repid.py
-python benchmarks/bench_celery.py
-python benchmarks/bench_celery_nogt.py
-python benchmarks/bench_dramatiq.py
-python benchmarks/bench_dramatiq_nogt.py
-python benchmarks/bench_faststream.py
-python benchmarks/bench_taskiq.py
+python run_all.py --frameworks repid taskiq_latency --sleep-times 0.1 --runs 1 --no-randomize
+python run_all.py --frameworks repid_steady taskiq_steady --sleep-times 5.0 --runs 1 --steady-warmup-seconds 15 --steady-measurement-seconds 60
+python run_all.py --frameworks celery --amqp-url amqp://user:testtest@host:5672/
 ```
 
-Every benchmark automatically purges its queue before enqueueing, so no
-manual queue cleanup is needed between runs.
+`run_all.py` writes a runtime config for each run, resets a unique RabbitMQ
+queue, waits for workers to become consumers when workers start before publish,
+and cleans up the queue plus framework auxiliary queues after the run. Timed-out
+runs are marked in the CSV with `status=timeout` and excluded from averages.
+
+## Methodology notes
+
+- **Run order**: randomized by default (`--no-randomize` to disable); warmup
+  runs execute before measured runs.
+- **Duration**: measured from benchmark start to last task completion,
+  excluding worker shutdown time, for drain/end-to-end modes.
+- **Steady-state mode**: `*_steady` starts workers and publishers together,
+  ignores warmup completions, measures completions during a fixed window, and
+  intentionally does not wait for final queue drain.
+- **Latency mode**: `*_latency` uses a controlled arrival rate. Warmup messages
+  are not recorded; measured messages carry enqueue timestamps and report p50,
+  p95, p99, offered rate, achieved rate, backlog at measurement end, and drain
+  time.
+- **Burst mode**: `*_burst` publishes one burst after workers are ready and
+  reports publish time, recovery time after publish completion, and final-tail
+  milestones. Burst runs use a per-process prefetch/concurrency budget of 100
+  to avoid making recovery tail primarily a large-prefetch artifact. Throughput
+  is secondary for this mode.
+- **Tail drain**: drain/end-to-end runs print and persist completion milestones
+  plus tail durations from 95%, 98%, 99%, and 99.5% to 100% when the run
+  completes. This separates steady progress from final straggler drain.
+- **Timeouts**: runs exceeding `--time-limit` are recorded as `status=timeout`
+  with partial throughput and excluded from averages.
+- **Failure propagation**: publisher exceptions and worker crashes cause the
+  run to fail with `status=error`.
+- **Message counts**: hard-coded per framework by default; use `--calibrate` to
+  derive counts that target equal run duration across frameworks.
+- **Steady source budget**: steady runs automatically raise the default message
+  budget to cover the warmup plus measurement window; explicit `--messages` and
+  `--messages-per-framework` values are used as-is.
+- **CPU mode**: CPU-bound runs use CPU-oriented worker settings where the
+  framework exposes them: Celery uses prefork, Dramatiq uses regular
+  non-gevent workers, and async frameworks avoid large in-process async
+  concurrency for CPU work.
+- **Acknowledgement**: Celery uses `acks_late=True`, Taskiq uses
+  `when_executed`, Dramatiq and FastStream use framework defaults, repid uses
+  default acknowledgement. These differ intentionally to match production
+  configuration for each framework.
